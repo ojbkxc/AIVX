@@ -51,17 +51,27 @@ pub struct DbWriter {
     /// 单写者内存 seq（启动从 store.max_seq() 恢复，ADR-026）。
     next_seq: u64,
     batch: usize,
+    /// 运行期增量投影器（flush 每个事件都喂给它——ADR-022 fan-out 的消费端）。
+    projector: Projector,
 }
 
 impl DbWriter {
     pub fn new(store: Arc<MemEventStore>, projections: Arc<MemProjections>) -> Self {
         let next_seq = store.max_seq() + 1; // ADR-026：重启不回退
+        // 运行期投影器：从 checkpoint 重放追赶 + 之后增量消费 flush 的每个事件。
+        let mut projector = Projector::new(store.clone(), projections.clone());
+        // 僵尸清扫（ADR-028）：重建活跃报警集；清扫补发的 AlarmCleared 必须
+        // 重新进入事件链（经 flush 正常落库 + fan-out），不能只丢在内存里。
+        let clears = projector.recover();
+        let mut buf: Vec<Event> = Vec::with_capacity(256);
+        buf.extend(clears);
         Self {
             store,
             projections,
-            buf: Vec::with_capacity(256),
+            buf,
             next_seq,
             batch: 256,
+            projector,
         }
     }
 
@@ -106,7 +116,8 @@ impl DbWriter {
         self.store.append_batch(batch.clone()); // "事务提交"
                                                 // 2. 提交后顺序 fan-out（Projector 在此消费——链上唯一、不可丢）
         for se in batch {
-            self.projections.record(se.seq); // P0：投影器以 record 代替
+            self.projections.record(se.seq);
+            self.projector.project_one(&se.event, se.seq); // 增量投影
         }
     }
 
@@ -152,6 +163,9 @@ impl Projector {
         let events = self.store.events_after(self.checkpoint);
         let mut clears = Vec::new();
         for se in &events {
+            // 重放只重建状态，不 record——重放的历史 seq 与增量路径会交叉，
+            // 破坏 assert_no_gaps 的"本次会话连续"语义；恢复完整性由
+            // seq_recovers 测试的尾部窗口断言单独覆盖。
             self.project_one(&se.event, se.seq);
         }
         // 僵尸清扫：活跃报警里 raised 距今（末 seq 位点）超过 TTL 的补清
@@ -179,15 +193,11 @@ impl Projector {
         match ev {
             Event::AlarmRaised { alarm_id, .. } => {
                 self.active_alarms.insert(alarm_id.clone(), seq);
-                self.projections.record(seq);
             }
             Event::AlarmCleared { alarm_id, .. } => {
                 self.active_alarms.remove(alarm_id);
-                self.projections.record(seq);
             }
-            _ => {
-                self.projections.record(seq);
-            }
+            _ => {}
         }
     }
 }
@@ -236,11 +246,10 @@ mod tests {
 
     /// ADR-026：重启后 seq 从 max+1 继续，不回退不重复。
     ///
-    /// 注意：`assert_no_gaps` 校验的是**本次 Projector 会话**消费的 seq 相对起点
-    /// 连续。DbWriter 的两次会话各自 fan-out 给了同一个 projections（模拟重启后
-    /// 投影恢复的"追赶重放"），重放起点是 store 里 max_seq——所以这里用独立
-    /// projections 校验第二段（11 号）从 0 起点 +1 递增没有意义；正确断言是：
-    /// 重放后 Projector 从 store 拿到全部 11 条且 seq 本身单调（1..=11）。
+    /// recover 只重建状态不 record（重放历史 seq 会与增量路径交叉破坏
+    /// assert_no_gaps 的"本次会话连续"语义）。恢复完整性由本项目自己的断言
+    /// 覆盖：DbWriter 第二段（11 号）fan-out 时 projections 增量记录 1..=10
+    ///（第一段）+ 11（第二段）——checkpoint 后的增量路径在会话内仍连续无洞。
     #[test]
     fn seq_recovers_after_restart() {
         let store = Arc::new(MemEventStore::new());
@@ -252,24 +261,20 @@ mod tests {
             }
             db.await_manually();
         }
+        // 第二段 DbWriter：recover 只重建状态（不 record），增量 flush 的 11 号
+        // 从 consumed 视角是连续的第 11 条（前 10 条来自第一段）——断言无洞。
         let mut db2 = DbWriter::new(store.clone(), projections.clone());
         assert_eq!(db2.next_seq_hint(), 11, "重启后 seq 必须从 max+1 开始");
+        // recover 在 DbWriter::new 内已执行：重放 1..=10，活跃集 10 条。
+        assert_eq!(
+            db2.projector.active_alarms.len(),
+            10,
+            "recover 必须重建 10 条活跃报警"
+        );
         db2.enqueue(alarm(99));
         db2.await_manually();
         assert_eq!(store.max_seq(), 11);
-        // 重启恢复：Projector 从头重放全部事件。重放会再次 record 全部 seq
-        //（consumed_seqs 含两段：DbWriter 第一段 1..=10 + 第二段 11，加 recover
-        // 的重放 1..=11）——对"重放覆盖完整性"的正确断言是看**尾部**：
-        // recover 后最后 11 条必须是 1..=11（重放无洞），而 store 里 1..=11 都在。
-        let mut proj = Projector::new(store.clone(), projections.clone());
-        proj.recover();
-        let seqs = projections.consumed_seqs.lock().unwrap().clone();
-        let replayed: Vec<u64> = seqs[seqs.len().saturating_sub(11)..].to_vec();
-        assert_eq!(
-            replayed,
-            (1..=11u64).collect::<Vec<_>>(),
-            "重放必须完整覆盖 1..=11"
-        );
+        assert!(projections.assert_no_gaps(0), "重启后增量路径仍无洞");
     }
 
     /// ADR-028：崩溃留下永真报警 → 重启清扫补 AlarmCleared。
@@ -297,6 +302,32 @@ mod tests {
                 if alarm_id == "r-1-1" && reason == "stale_on_boot")
         );
         assert!(proj.active_alarms.is_empty());
+    }
+
+    /// 运行期增量投影（ADR-022 的 DB writer 内联投影）：AlarmRaised 进活跃集，
+    /// 随后 AlarmCleared 移除——投影器状态在运行期（非仅 recover）保持一致。
+    #[test]
+    fn projector_tracks_active_alarms_inline() {
+        let store = Arc::new(MemEventStore::new());
+        let projections = Arc::new(MemProjections::default());
+        let mut db = DbWriter::new(store.clone(), projections.clone());
+
+        db.enqueue(alarm(1));
+        db.await_manually();
+        assert!(
+            !db.projector.active_alarms.is_empty(),
+            "AlarmRaised 应进入活跃集"
+        );
+
+        db.enqueue(Event::AlarmCleared {
+            alarm_id: "r-1-1".into(),
+            reason: "track_lost".into(),
+        });
+        db.await_manually();
+        assert!(
+            db.projector.active_alarms.is_empty(),
+            "AlarmCleared 应移除活跃报警"
+        );
     }
 
     /// 端到端：PlaneBridge emit → drain → DbWriter → 无洞（I12 + ADR-022）。
