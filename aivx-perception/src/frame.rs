@@ -70,7 +70,7 @@ impl LatestFrameSlot {
         let idx = 1 - self.active.load(Ordering::Acquire);
         let seq = &self.seq[idx];
         let cur = seq.fetch_add(1, Ordering::AcqRel); // 偶→奇：写入中
-        debug_assert_eq!(cur % 2, 0, "写入中途重入——协议违反");
+        debug_assert!(!cur.is_multiple_of(2), "写入中途重入——协议违反");
         self.bufs[idx].iter_mut().for_each(|b| *b = val);
         self.commit_locked(idx)
     }
@@ -91,7 +91,7 @@ impl LatestFrameSlot {
             }
             let idx = self.active.load(Ordering::Acquire);
             let seq = self.seq[idx].load(Ordering::Acquire);
-            if seq % 2 != 0 {
+            if !seq.is_multiple_of(2) {
                 std::hint::spin_loop(); // active 恰在翻转瞬间——重试
                 continue;
             }
@@ -112,7 +112,7 @@ impl LatestFrameSlot {
         F: FnOnce(&[u8]) -> R,
     {
         let before = self.seq[fr.idx].load(Ordering::Acquire);
-        if before != fr.seq || before % 2 != 0 {
+        if before != fr.seq || !before.is_multiple_of(2) {
             return None;
         }
         let y_len = self.width * self.height;
@@ -130,7 +130,7 @@ impl LatestFrameSlot {
     /// 目标由调用方预分配（InferScratch）——本函数零分配（I1）。
     pub fn copy_nv12_to(&self, fr: &FrameRef, dst: &mut [u8]) -> bool {
         let before = self.seq[fr.idx].load(Ordering::Acquire);
-        if before != fr.seq || before % 2 != 0 {
+        if before != fr.seq || !before.is_multiple_of(2) {
             return false;
         }
         debug_assert!(dst.len() >= self.frame_size, "scratch 太小");

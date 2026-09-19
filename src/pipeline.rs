@@ -257,12 +257,16 @@ mod tests {
         db2.enqueue(alarm(99));
         db2.await_manually();
         assert_eq!(store.max_seq(), 11);
-        // 重启恢复：Projector 从头重放全部事件，seq 必须覆盖 1..=11 无洞
+        // 重启恢复：Projector 从头重放全部事件。重放会再次 record 全部 seq
+        //（consumed_seqs 含两段：DbWriter 第一段 1..=10 + 第二段 11，加 recover
+        // 的重放 1..=11）——对"重放覆盖完整性"的正确断言是看**尾部**：
+        // recover 后最后 11 条必须是 1..=11（重放无洞），而 store 里 1..=11 都在。
         let mut proj = Projector::new(store.clone(), projections.clone());
         proj.recover();
         let seqs = projections.consumed_seqs.lock().unwrap().clone();
+        let replayed: Vec<u64> = seqs[seqs.len().saturating_sub(11)..].to_vec();
         assert_eq!(
-            seqs,
+            replayed,
             (1..=11u64).collect::<Vec<_>>(),
             "重放必须完整覆盖 1..=11"
         );
