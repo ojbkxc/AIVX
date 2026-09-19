@@ -8,12 +8,10 @@
 //! 自测收发，不依赖真实设备。
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 use super::{parse_request, SipObserver, SipRequest};
 
@@ -179,7 +177,10 @@ impl SipServer {
 
     /// UDP 监听线程（回环端口）。`self` 须为 Arc（closure 需 move 进线程）。
     pub fn spawn_udp(self: Arc<Self>, port: u16) -> std::io::Result<UdpSocket> {
-        let sock = Arc::new(UdpSocket::bind(("127.0.0.1", port))?);
+        let sock = UdpSocket::bind(("127.0.0.1", port))?;
+        // try_clone：返回一个共享同一底层 socket 的句柄（供调用方收发测试）
+        let handle = sock.try_clone()?;
+        let sock = Arc::new(sock);
         self.running.store(true, Ordering::SeqCst);
         let running = self.running.clone();
         let server = self;
@@ -195,11 +196,7 @@ impl SipServer {
                 }
             }
         });
-        Ok(Arc::try_unwrap(sock).unwrap_or_else(|arc| {
-            // 无法 unwrap 时返回原 socket（测试只验证收发，不依赖 Arc）
-            let _ = arc;
-            UdpSocket::bind(("127.0.0.1", 0)).unwrap()
-        }))
+        Ok(handle)
     }
 
     pub fn shutdown(&self) {
