@@ -48,9 +48,12 @@ pub struct DecodeCfg {
 }
 
 impl DecodeCfg {
-    /// ffmpeg 参数：拉子码流 → 硬解 → NV12 裸流。
+    /// ffmpeg 参数：拉流 → 缩放到分析分辨率 → NV12 裸流。
     ///
-    /// `-an` 丢音频（分析不需要）；`-hwaccel auto` 硬解优先、失败自动软解；
+    /// `-an` 丢音频（分析不需要）；`-vf scale` 保证输出分辨率=帧池
+    /// （源 2880×1624 主码流或任意分辨率——TP-LINK 实证 `stream1&channel=N`
+    /// 是主码流，I4 的"子码流分析"由 NVR 侧 stream2 提供，这里 scale 兜底）。
+    /// `-s` 显式声明给 rawvideo muxer（缺它 ffmpeg 报 "Error parsing options"）。
     /// NV12 是 I1 的单一事实格式（DESIGN.md §2）。
     pub fn ffmpeg_args(&self) -> Vec<String> {
         let mut args: Vec<String> = vec!["-rtsp_transport".into(), "tcp".into()];
@@ -59,10 +62,10 @@ impl DecodeCfg {
             "-i".into(),
             self.rtsp_url.clone(),
             "-an".into(),
-            "-hwaccel".into(),
-            "auto".into(),
             "-pix_fmt".into(),
             "nv12".into(),
+            "-s".into(),
+            format!("{}x{}", self.width, self.height),
             "-f".into(),
             "rawvideo".into(),
             "-".into(),
