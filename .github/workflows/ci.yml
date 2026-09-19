@@ -77,8 +77,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --locked
-      - name: 骨架自检
-        run: ./target/release/aivx
+      # P9b 起二进制是常驻服务（监听 18443 不退出）——CI 只验证启动健康，
+      # 拉起 healthz 后即杀（超时 10s 兜底防挂死 job）。
+      - name: 启动自检（healthz 后退出）
+        run: |
+          AIVX_PORT=18999 AIVX_STATIC_DIR=static ./target/release/aivx &
+          PID=$!
+          for i in $(seq 1 50); do
+            if curl -sf http://127.0.0.1:18999/api/healthz >/dev/null 2>&1; then
+              echo "healthz OK"; kill $PID; exit 0
+            fi
+            sleep 0.2
+          done
+          echo "::error::healthz 10s 未就绪"; kill $PID; exit 1
 
   frontend:
     name: Frontend (tsc + vitest + build)
