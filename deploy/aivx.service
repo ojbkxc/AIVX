@@ -1,0 +1,31 @@
+# AIVX systemd 单元（部署目标：Debian 12 /opt/aivx）。
+# 端口 18443（用户指定）；崩溃自动重启；日志走 journald。
+[Unit]
+Description=AIVX — AI Video eXtended NVR
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/aivx
+ExecStart=/opt/aivx/aivx
+Restart=on-failure
+RestartSec=3
+# 数据目录：录像/事件库/配置（首次启动生成默认配置）
+Environment=AIVX_DATA_DIR=/opt/aivx/data
+# 前端静态资源目录
+Environment=AIVX_STATIC_DIR=/opt/aivx/static
+# 监听端口（用户指定 18443）
+Environment=AIVX_PORT=18443
+# 资源护栏：8 路预算 1.5 核 / 512MB（DESIGN.md §21 性能预算）
+CPUQuota=200%
+MemoryMax=768M
+# 加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/aivx
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

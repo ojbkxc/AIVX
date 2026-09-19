@@ -1,0 +1,52 @@
+name: Deploy
+
+# P9 部署：CI 绿 → 构建 Linux release 二进制 → 打包（含 static 前端）→ 上传 artifact。
+# 服务器侧由本地/服务器上的拉取脚本取 artifact 解包到 /opt/aivx 并重启 systemd。
+# （不在 workflow 里内置服务器凭据——凭据不入库，AGENTS.md Never-2。）
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build-linux:
+    name: Build linux-amd64 release bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release
+        run: cargo build --release --locked
+      - name: Build frontend
+        run: |
+          npm ci --prefix frontend
+          npm run typecheck --prefix frontend
+          npm run build --prefix frontend
+      - name: Self-check
+        run: ./target/release/aivx
+      - name: Assemble bundle
+        run: |
+          mkdir -p bundle/aivx
+          cp target/release/aivx bundle/aivx/
+          cp -r static bundle/aivx/static
+          # deploy.sh 与 systemd 单元随包分发
+          cp deploy/aivx.service bundle/ 2>/dev/null || true
+          cp deploy/install.sh bundle/ 2>/dev/null || true
+          tar -czf aivx-linux-amd64.tar.gz -C bundle .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aivx-linux-amd64
+          path: aivx-linux-amd64.tar.gz
+          retention-days: 14
+      - name: Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: aivx-linux-amd64.tar.gz
