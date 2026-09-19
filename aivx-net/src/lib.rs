@@ -112,6 +112,30 @@ pub trait DeviceAdapter: Send + Sync {
     fn snapshot(&self, device: &Device) -> Result<Supported<Vec<u8>>, AdapterError>;
 }
 
+/// ONVIF 通用兜底驱动（P6 桩：能力全 No，等 P7 接真实 SOAP 实现）。
+pub struct OnvifAdapter;
+
+impl DeviceAdapter for OnvifAdapter {
+    fn discover(&self) -> Result<Vec<DeviceCandidate>, AdapterError> {
+        Ok(vec![]) // P7：WS-Discovery 多播扫描
+    }
+    fn get_streams(&self, device: &Device) -> Result<Device, AdapterError> {
+        Ok(device.clone()) // P7：GetProfiles → GetStreamUri
+    }
+    fn capabilities(&self, _d: &Device) -> Result<Capabilities, AdapterError> {
+        Ok(Capabilities::default()) // P7：GetCapabilities 探测
+    }
+    fn ptz(&self, _d: &Device, _c: PtzCmd) -> Result<Supported<()>, AdapterError> {
+        Ok(Supported::No) // P7：ContinuousMove 实现
+    }
+    fn snapshot(&self, _d: &Device) -> Result<Supported<Vec<u8>>, AdapterError> {
+        Ok(Supported::No) // P7：GetSnapshotUri
+    }
+}
+
+/// 驱动注册表（P6，DESIGN.md §12）。
+pub mod registry;
+
 #[cfg(test)]
 mod tests {
     use super::*;
