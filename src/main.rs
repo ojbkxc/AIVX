@@ -21,8 +21,8 @@ use tower_http::services::ServeDir;
 use aivx_events::Event;
 use aivx_net::Device;
 
-use crate::memory::{MemEventStore, MemProjections};
-use crate::pipeline::{forwarder, DbWriter, Projector};
+use aivx::memory::{MemEventStore, MemProjections};
+use aivx::pipeline::{forwarder, DbWriter, Projector};
 
 /// 运行配置（env → 默认值；文件层随 P8 ConfigHolder 落地）。
 struct Config {
