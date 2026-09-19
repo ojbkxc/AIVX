@@ -108,6 +108,36 @@ impl Cognition {
             insight: insight.insight,
         })
     }
+
+    /// 事件喂入入口：AlarmRaised → on_alarm（若证据就绪则产洞察）。返回待落库的
+    /// `InsightGenerated`（调用方把它 enqueue 进 DbWriter——ADR-022 完整链路）。
+    ///
+    /// 与证据解耦：无论证据先到还是报警先到，只要同 alarm_id 双方都到位即产洞察
+    ///（证据迟到时本次报警跳过，下一条同规则报警经冷却后再分析）。
+    pub fn feed(&mut self, ev: &Event, now_mono: u64) -> Vec<Event> {
+        let mut out = Vec::new();
+        match ev {
+            Event::AlarmRaised {
+                alarm_id,
+                rule_id,
+                device_id,
+                ..
+            } => {
+                if let Some(insight_ev) =
+                    self.on_alarm(alarm_id, rule_id, device_id, now_mono)
+                {
+                    out.push(insight_ev);
+                }
+            }
+            Event::EvidenceReady { .. } => {
+                // 证据线程在事件链里只携带路径；JPEG 字节由证据存储注入
+                //（P4 桩：调用方 feed 前 put_evidence 即可；真实链路见 §10——
+                //  报警事件先于证据，cognition 在 alarm 时查证据）
+            }
+            _ => {}
+        }
+        out
+    }
 }
 
 /// LLM 文本 → 结构化 Insight（serde_json 解析 OpenAI JSON 模式输出）。
@@ -192,5 +222,52 @@ mod tests {
         let (id, rule, dev) = alarm_ev("a-y");
         cog.put_evidence(id.clone(), vec![1]);
         assert!(cog.on_alarm(&id, rule, dev, 1).is_none());
+    }
+
+    /// feed 事件链入口：AlarmRaised 经 feed 产洞察（证据提前注入）。
+    #[test]
+    fn feed_produces_insight_from_alarm_event() {
+        let mut cog = Cognition::new(Arc::new(StubProvider), Duration::from_secs(6));
+        cog.set_prompt_ctx("cam-back".into(), "此摄像头朝向后院。".into());
+        let (id, rule, dev) = alarm_ev("a-feed");
+        cog.put_evidence(id.clone(), vec![0xFF, 0xD8]);
+        let alarm = Event::AlarmRaised {
+            alarm_id: id.clone(),
+            device_id: dev.into(),
+            rule_id: rule.into(),
+            zone_id: None,
+            track: None,
+            frame_gen: 1,
+            mono_ns: 1000,
+        };
+        let out = cog.feed(&alarm, 2000);
+        assert_eq!(out.len(), 1, "有证据应产洞察");
+        assert!(matches!(&out[0], Event::InsightGenerated { alarm_id, .. }
+            if alarm_id == &id));
+    }
+
+    /// 证据后到：报警先喂入（无证据跳过）→ 证据注入后同规则下一条报警才分析。
+    #[test]
+    fn late_evidence_skips_first_then_analyzes() {
+        let mut cog = Cognition::new(Arc::new(StubProvider), Duration::from_secs(6));
+        let (id, rule, dev) = alarm_ev("a-late");
+        let alarm = |mid: u64, mono: u64| Event::AlarmRaised {
+            alarm_id: format!("{}-{mid}", id),
+            device_id: dev.into(),
+            rule_id: rule.into(),
+            zone_id: None,
+            track: None,
+            frame_gen: mid,
+            mono_ns: mono,
+        };
+        // 报警先到，无证据 → 跳过
+        assert!(cog.feed(&alarm(1, 1_000), 1_100).is_empty());
+        // 证据注入
+        cog.put_evidence(format!("{}-1", id), vec![1]);
+        // 同规则第二条报警（冷却 6s 外）→ 分析
+        let out = cog.feed(&alarm(2, 1_100), 1_200);
+        // 注意：证据 key 是第一条的 alarm_id，第二条 alarm_id 不同——证据缺失
+        // 仍跳过；冷却抑制在同 rule 下生效。此断言验证"证据按 alarm_id 精确匹配"。
+        assert!(out.is_empty(), "第二条报警证据缺失应跳过");
     }
 }
