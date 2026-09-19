@@ -148,7 +148,7 @@ pub fn run(
                         )
                     }
                 }
-                Some(s) => tools::exec_tool(
+                Some(_) => tools::exec_tool(
                     ctx,
                     &call.function_name,
                     &serde_json::from_str(&call.arguments).unwrap_or_default(),
