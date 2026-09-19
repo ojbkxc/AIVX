@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::pool::{Det, EngineKey, InferBackend};
+use crate::yolo_math::{nms, nv12_to_rgb_float, parse_output};
 
 /// ort YOLO 后端（模型缓存 + 批前向）。
 pub struct OrtYoloBackend {
@@ -53,94 +54,6 @@ impl OrtYoloBackend {
         }
         Err(format!("模型 {} 未加载", key.model_id))
     }
-
-    /// NV12 → RGB float（ort 输入）。预分配 buffer。
-    fn nv12_to_rgb_float(nv12: &[u8], w: u32, h: u32) -> Vec<f32> {
-        // NV12：Y 平面 w*h + UV 交错平面 w*h/2
-        let mut rgb = vec![0f32; (w * h * 3) as usize];
-        let y_size = (w * h) as usize;
-        let (y_plane, uv) = nv12.split_at(y_size);
-        let _ = uv;
-        // 简化：用 Y 作为灰度近似 RGB（真实 YOLO 需完整 NV12→RGB 转换 + 归一化）
-        for i in 0..y_size {
-            let y = y_plane[i] as f32 / 255.0;
-            rgb[i * 3] = y;
-            rgb[i * 3 + 1] = y;
-            rgb[i * 3 + 2] = y;
-        }
-        rgb
-    }
-
-    /// 解析 YOLOv8 输出（1×4×8400）→ 候选框（conf > threshold）。
-    /// 输出布局：4 = x_center, y_center, w, h + 80 class scores。
-    fn parse_output(output: &[f32], input_size: u32, conf: f32) -> Vec<(f32, f32, f32, f32, f32)> {
-        let stride = 4 + 80; // 4 坐标 + 80 COCO 类
-        let num_det = output.len() / stride;
-        let mut candidates = Vec::new();
-        for i in 0..num_det {
-            let base = i * stride;
-            let cx = output[base];
-            let cy = output[base + 1];
-            let w = output[base + 2];
-            let h = output[base + 3];
-            // 找最高类分数
-            let mut best_score = 0f32;
-            for c in 4..stride {
-                let s = output[base + c];
-                if s > best_score {
-                    best_score = s;
-                }
-            }
-            if best_score >= conf {
-                // 坐标从归一化 → 像素
-                let x1 = (cx - w / 2.0) * input_size as f32;
-                let y1 = (cy - h / 2.0) * input_size as f32;
-                let bw = w * input_size as f32;
-                let bh = h * input_size as f32;
-                candidates.push((x1, y1, bw, bh, best_score));
-            }
-        }
-        candidates
-    }
-
-    /// NMS（IoU 阈值过滤重叠框）。
-    fn nms(candidates: &[(f32, f32, f32, f32, f32)], iou_threshold: f32) -> Vec<Det> {
-        let mut sorted = candidates.to_vec();
-        sorted.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
-        let mut kept = Vec::new();
-        for &c in &sorted {
-            let mut overlap = false;
-            for &k in &kept {
-                if iou(c.0, c.1, c.2, c.3, k.0, k.1, k.2, k.3) > iou_threshold {
-                    overlap = true;
-                    break;
-                }
-            }
-            if !overlap {
-                kept.push(Det {
-                    x: c.0.max(0.0) as u32,
-                    y: c.1.max(0.0) as u32,
-                    w: c.2 as u32,
-                    h: c.3 as u32,
-                });
-            }
-        }
-        kept
-    }
-}
-
-fn iou(ax: f32, ay: f32, aw: f32, ah: f32, bx: f32, by: f32, bw: f32, bh: f32) -> f32 {
-    let ix1 = ax.max(bx);
-    let iy1 = ay.max(by);
-    let ix2 = (ax + aw).min(bx + bw);
-    let iy2 = (ay + ah).min(by + bh);
-    let inter = (ix2 - ix1).max(0.0) * (iy2 - iy1).max(0.0);
-    let union = aw * ah + bw * bh - inter;
-    if union <= 0.0 {
-        0.0
-    } else {
-        inter / union
-    }
 }
 
 impl InferBackend for OrtYoloBackend {
@@ -153,7 +66,7 @@ impl InferBackend for OrtYoloBackend {
         let n = inputs.len();
         let mut batch = Vec::with_capacity(n * 3 * 640 * 640);
         for inp in inputs {
-            batch.extend(Self::nv12_to_rgb_float(inp, key.input_w, key.input_h));
+            batch.extend(nv12_to_rgb_float(inp, key.input_w, key.input_h));
         }
         let shape = [n as i64, 3, 640, 640];
         let tensor = match ort::value::Value::from_array((batch, shape)) {
@@ -170,8 +83,8 @@ impl InferBackend for OrtYoloBackend {
         let mut results = Vec::with_capacity(n);
         for i in 0..n {
             let slice: Vec<f32> = output[i * per_input..(i + 1) * per_input].to_vec();
-            let cands = Self::parse_output(&slice, self.input_size, self.conf_threshold);
-            results.push(Self::nms(&cands, self.iou_threshold));
+            let cands = parse_output(&slice, self.input_size, self.conf_threshold);
+            results.push(nms(&cands, self.iou_threshold));
         }
         results
     }
@@ -191,7 +104,7 @@ mod tests {
         out[2] = 0.2;
         out[3] = 0.4;
         out[4] = 0.9; // class 0 score
-        let cands = OrtYoloBackend::parse_output(&out, 640, 0.4);
+        let cands = crate::yolo_math::parse_output(&out, 640, 0.4);
         assert_eq!(cands.len(), 1);
         let (x1, y1, w, h, score) = cands[0];
         assert!((x1 - 256.0).abs() < 1.0, "x1 应为 (0.5-0.1)*640=256");
@@ -210,7 +123,7 @@ mod tests {
             (110.0, 110.0, 50.0, 50.0, 0.5),
             (500.0, 500.0, 50.0, 50.0, 0.7), // 不重叠
         ];
-        let dets = OrtYoloBackend::nms(&cands, 0.45);
+        let dets = crate::yolo_math::nms(&cands, 0.45);
         assert_eq!(dets.len(), 2, "重叠的应只剩一个，不重叠的保留");
     }
 
@@ -218,10 +131,10 @@ mod tests {
     #[test]
     fn iou_correct() {
         // 完全重叠 → 1.0
-        let v = iou(0.0, 0.0, 10.0, 10.0, 0.0, 0.0, 10.0, 10.0);
+        let v = crate::yolo_math::iou(0.0, 0.0, 10.0, 10.0, 0.0, 0.0, 10.0, 10.0);
         assert!((v - 1.0).abs() < 0.01);
         // 完全不重叠 → 0.0
-        let v = iou(0.0, 0.0, 10.0, 10.0, 100.0, 100.0, 10.0, 10.0);
+        let v = crate::yolo_math::iou(0.0, 0.0, 10.0, 10.0, 100.0, 100.0, 10.0, 10.0);
         assert!((v - 0.0).abs() < 0.01);
     }
 
@@ -229,7 +142,7 @@ mod tests {
     #[test]
     fn nv12_to_rgb_shape() {
         let nv12 = vec![128u8; 640 * 360 + 640 * 360 / 2];
-        let rgb = OrtYoloBackend::nv12_to_rgb_float(&nv12, 640, 360);
+        let rgb = crate::yolo_math::nv12_to_rgb_float(&nv12, 640, 360);
         assert_eq!(rgb.len(), 640 * 360 * 3);
         // Y=128/255 ≈ 0.502
         assert!((rgb[0] - 0.502).abs() < 0.01);

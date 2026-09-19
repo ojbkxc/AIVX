@@ -31,6 +31,7 @@ pub mod stream;
 pub mod track;
 #[cfg(feature = "ort-yolo")]
 pub mod yolo;
+pub mod yolo_math;
 
 /// 单调钟纳秒（数据面唯一时钟，DESIGN.md §18 混合时钟）。
 /// 用不起 std::time::Instant 的跨线程传递，直接拿绝对纳秒。
