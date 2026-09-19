@@ -24,6 +24,7 @@ pub mod bridge;
 pub mod config;
 pub mod frame;
 pub mod motion;
+pub mod pool;
 pub mod record;
 pub mod rules;
 pub mod stream;
