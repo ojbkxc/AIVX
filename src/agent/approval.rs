@@ -25,6 +25,7 @@ pub struct AgentApprovals {
     remembered: Mutex<HashMap<String, Vec<String>>>,
 }
 
+impl AgentApprovals {
     pub fn is_remembered(&self, session_id: &str, tool: &str) -> bool {
         self.remembered
             .lock()
