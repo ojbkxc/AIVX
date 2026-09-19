@@ -59,6 +59,8 @@ jobs:
         run: cargo test -p aivx-perception --locked -- --test-threads=1
       - name: yolo 纯逻辑测试（parse_output/nms/iou/nv12——无 ort 依赖，CI 必跑）
         run: "cargo test -p aivx-perception --locked yolo_math -- --test-threads=1"
+      - name: ort-yolo 编译验证（无模型加载，仅验证 feature 下 yolo.rs 编译）
+        run: "cargo check -p aivx-perception --locked --features ort-yolo 2>&1 | head -20"
       - name: 其余测试（含 ADR-022/023/026/028 机器强制；排除 perception 防重跑污染 I1）
         run: cargo test --workspace --locked --exclude aivx-perception
       - name: 关键不变量测试名单（可视化确认）
