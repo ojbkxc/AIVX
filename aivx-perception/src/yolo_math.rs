@@ -57,7 +57,7 @@ pub fn iou(ax: f32, ay: f32, aw: f32, ah: f32, bx: f32, by: f32, bw: f32, bh: f3
 pub fn nms(candidates: &[(f32, f32, f32, f32, f32)], iou_threshold: f32) -> Vec<Det> {
     let mut sorted = candidates.to_vec();
     sorted.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
-    let mut kept = Vec::new();
+    let mut kept: Vec<Det> = Vec::new();
     for &c in &sorted {
         let mut overlap = false;
         for &k in &kept {
