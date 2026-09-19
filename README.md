@@ -126,7 +126,7 @@ npm install && npm run build
 ```toml
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 18443
 
 [data]
 dir = "~/.aivx"          # 数据库 + 录像
