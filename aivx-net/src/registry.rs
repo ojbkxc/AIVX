@@ -64,7 +64,7 @@ impl Registry {
         }
         // 2. 指纹 probe（OEM 贴牌：厂商名说谎但能力特征可辨）——按优先级降序
         let mut by_priority = self.specs.clone();
-        by_priority.sort_by(|a, b| b.priority.cmp(&a.priority));
+        by_priority.sort_by_key(|s| std::cmp::Reverse(s.priority));
         for spec in by_priority.iter() {
             if let Some(probe) = spec.probe {
                 if probe(device).is_some() {

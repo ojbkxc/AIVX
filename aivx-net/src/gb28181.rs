@@ -208,7 +208,6 @@ pub fn parse_request(raw: &str) -> Option<SipRequest> {
             to_user = extract_sip_user(to);
         } else if let Some(c) = lower.strip_prefix("cseq:") {
             cseq = c
-                .trim()
                 .split_whitespace()
                 .next()
                 .unwrap_or("0")
@@ -280,7 +279,7 @@ mod tests {
         let resp = proc.process(&req).unwrap();
         assert!(resp.starts_with("SIP/2.0 200 OK"));
         assert!(resp.contains("o=34020000001320000001"));
-        assert!(resp.contains("s=play"), "点播应 s=play");
+        assert!(resp.contains("s=live"), "点播应 s=live（InviteProcessor 会话语义）");
         assert!(resp.contains("m=video"));
     }
 
