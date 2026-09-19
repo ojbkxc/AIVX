@@ -41,7 +41,7 @@ use serde::Deserialize;
 
 /// ── YAML 模型（Frigate 字段习惯）──────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct AivxYaml {
     #[serde(default)]
     pub cameras: HashMap<String, CameraYaml>,
@@ -105,7 +105,7 @@ pub struct RecordMotionYaml {
     pub days: u32,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct SnapshotsYaml {
     #[serde(default)]
     pub enabled: bool,
@@ -182,7 +182,13 @@ impl CameraManager {
             let device_id: DeviceId = name.clone();
             let (bridge, bridge_rx) = PlaneBridge::new(1024, None);
             let bridge = Arc::new(bridge);
-            let slot = Arc::new(LatestFrameSlot::new(cam.detect.width, cam.detect.height));
+            // slot 先建独立实例给 T1（独占所有权），T2 共享用同一 Arc：
+            // decode_loop(cfg, slot: LatestFrameSlot) 按值收——T1 用 Arc::try_unwrap。
+            // 构建顺序：先 clone 给 T2 的 Arc，再 try_unwrap 给 T1。
+            let slot_t2 = Arc::new(LatestFrameSlot::new(cam.detect.width, cam.detect.height));
+            let slot_t1 = Arc::try_unwrap(slot_t2.clone())
+                .ok()
+                .expect("slot Arc must be unique right after creation");
 
             // 事件汇聚线程：bridge_rx → 全局 tx（单路内 FIFO 保序；转投 try_send
             // 不阻塞数据面——桥线程阻塞 recv 无害，它不是热路径）
@@ -203,7 +209,7 @@ impl CameraManager {
                     })?;
             }
 
-            // T1 拉流线程（std::thread——数据面，ADR-019）
+            // T1 拉流线程（std::thread——数据面，ADR-019）。slot_t1 已独占所有权。
             let cfg = DecodeCfg {
                 device_id: device_id.clone(),
                 rtsp_url: input.path.clone(),
@@ -214,17 +220,15 @@ impl CameraManager {
             };
             {
                 let bridge = bridge.clone();
-                let slot = slot.clone();
+                let slot = slot_t1;
                 std::thread::Builder::new()
                     .name(format!("cam-{name}-t1-decode"))
-                    .spawn(move || {
-                        aivx_perception::stream::decode_loop(cfg, (*slot).clone(), bridge)
-                    })?;
+                    .spawn(move || aivx_perception::stream::decode_loop(cfg, slot, bridge))?;
             }
-            // T2 分析线程
+            // T2 分析线程（Arc 共享 slot——只读路径 + latest-wins 语义）
             {
                 let bridge = bridge.clone();
-                let slot = slot.clone();
+                let slot = slot_t2;
                 let device_id = device_id.clone();
                 std::thread::Builder::new()
                     .name(format!("cam-{name}-t2-analyze"))
@@ -276,18 +280,19 @@ impl CameraManager {
             });
         }
 
-        let _ = rx; // rx 返回给调用方（main 转交 forwarder）——见 event_rx()
         let manager = Self {
             cameras,
             _event_tx: tx.clone(),
+            event_rx: Mutex::new(Some(rx)),
         };
-        manager.event_rx.set(rx).ok(); // 首次 set 成功；重复 load 报错忽略
         Ok(manager)
     }
 
     /// 事件流接收端（main 转交 forwarder——全局唯一上游）。
     pub fn event_rx(&self) -> Receiver<Event> {
         self.event_rx
+            .lock()
+            .unwrap()
             .take()
             .expect("event_rx 已被取走（CameraManager 只能被消费一次）")
     }
