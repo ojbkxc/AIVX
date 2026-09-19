@@ -96,14 +96,14 @@ pub fn analysis_loop(
             .fetch_add(crate::mono_ns() - infer_start, Ordering::Relaxed);
         bridge.metrics.inferences.fetch_add(1, Ordering::Relaxed);
 
-        // P0 事件形态：桩推理命中 → 报警（P2 换规则状态机，I8 去重）
+        // 推理命中 → 检测事件（规则引擎/跟踪在 analyze 之上消费；I8 去重由规则状态机保证）
         if !dets.is_empty() {
             let now = crate::mono_ns();
             bridge.mark_alarm(now);
             bridge.emit(Event::AlarmRaised {
-                alarm_id: format!("stub-{}-{}", fr.gen, now),
+                alarm_id: format!("det-{}-{}", fr.gen, now),
                 device_id: device_id.clone(),
-                rule_id: "stub-motion".into(),
+                rule_id: "detect".into(),
                 zone_id: None,
                 track: None,
                 frame_gen: fr.gen,
