@@ -135,11 +135,7 @@ pub fn decode_loop(cfg: DecodeCfg, slot: Arc<LatestFrameSlot>, bridge: Arc<Plane
 ///
 /// 返回 Eof 即外层重连。短读（读到一半断）同样按 Eof 处理——分辨率变更或
 /// 网络断都会造成字节错位，唯一正确动作是重启 ffmpeg（DESIGN.md §3.1 自愈）。
-fn write_exact(
-    stdout: &mut impl Read,
-    slot: &LatestFrameSlot,
-    frame_size: usize,
-) -> WriteOutcome {
+fn write_exact(stdout: &mut impl Read, slot: &LatestFrameSlot, frame_size: usize) -> WriteOutcome {
     // 两段式：先 begin（锁缓冲+seq 变奇），再读，读完 commit。
     // 读半途失败：缓冲 seq 停在奇数——读者永不读它（安全），下轮 begin_write
     // 选同一非活跃缓冲会 debug_assert；所以失败必须 rollback（seq 回偶）。

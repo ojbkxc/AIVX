@@ -87,8 +87,10 @@ impl LatestFrameSlot {
         // SAFETY: 单写者约定（T1 唯一）+ begin/commit 期间 T2 读者对该缓冲
         // 只在 seq 为偶时进入（seq 已为奇 = 互斥达成）。同进程内、同帧池
         // 生命周期内唯一可变借用——等价于独占所有权下的 &mut。
+        // as_mut_ptr 经 &self 取裸指针合法（Vec 布局稳定）。
         let buf = unsafe {
-            let ptr = self.bufs[idx].as_mut_ptr();
+            let this = self as *const Self as *mut Self;
+            let ptr = (*this).bufs[idx].as_mut_ptr();
             std::slice::from_raw_parts_mut(ptr, self.bufs[idx].len())
         };
         (idx, buf)
