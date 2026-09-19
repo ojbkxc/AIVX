@@ -14,16 +14,9 @@
 use crate::{AdapterError, Capabilities, Device, PtzCmd, Supported};
 
 /// SOAP 客户端（持 HTTP 客户端 + 设备地址）。
+#[derive(Default)]
 pub struct OnvifClient {
     http: reqwest::blocking::Client,
-}
-
-impl Default for OnvifClient {
-    fn default() -> Self {
-        Self {
-            http: reqwest::blocking::Client::new(),
-        }
-    }
 }
 
 impl OnvifClient {
@@ -273,11 +266,10 @@ mod tests {
     }
 
     /// PTZ 能力缺失 → Supported::No（I10：数据不是错误）。
+    /// 通过 DeviceAdapter trait 调 OnvifAdapter（桩模式 client=None）。
     #[test]
     fn ptz_without_capability_is_no() {
-        let client = OnvifClient::new();
-        // capabilities 依赖网络 → 桩模式下网络错误，但契约测试用 StubAdapter。
-        // 这里验证：OnvifAdapter 桩模式（client=None）ptz 返回 No。
+        use crate::DeviceAdapter as _;
         let adapter = crate::OnvifAdapter::default();
         let result = adapter.ptz(&dev(), PtzCmd::Left);
         assert!(matches!(result, Ok(Supported::No)));
