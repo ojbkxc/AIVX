@@ -11,13 +11,8 @@
 //! 推理引擎通过 [`InferBackend`] trait 注入：P8 用 ort YOLO 实现，
 //! 测试用假后端驱动批处理断言（I1 分配计数）。
 
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
-
-/// 推理请求状态。
-const PENDING: u8 = 0;
-const READY: u8 = 1;
 
 /// 单条推理请求（T2 提交）。
 pub struct InferReq {
@@ -25,13 +20,18 @@ pub struct InferReq {
     pub key: EngineKey,
     /// 输入 NV12 帧副本（scratch，预分配）。
     pub input: Vec<u8>,
-    /// 请求完成状态（PENDING→READY）。
-    pub state: AtomicU8,
+    /// 结果投递槽：worker 填 dets + notify；T2 等待。
+    pub result: Arc<(Mutex<Vec<Det>>, Condvar)>,
 }
 
-/// 推理响应（写回请求）。
-pub struct InferResp {
-    pub dets: Vec<Det>,
+impl InferReq {
+    fn new(key: EngineKey, input: Vec<u8>) -> Self {
+        Self {
+            key,
+            input,
+            result: Arc::new((Mutex::new(Vec::new()), Condvar::new())),
+        }
+    }
 }
 
 /// 检测结果（对齐 analyze.rs 的 Det）。
@@ -109,10 +109,13 @@ impl DetectorPool {
                 let key = inflight[0].key.clone();
                 let inputs: Vec<Vec<u8>> = inflight.iter().map(|r| r.input.clone()).collect();
                 let results = self.backend.detect(&key, &inputs);
+                // 真实结果投递：每个请求的 result 槽写入 dets + notify（T2 等它）
                 for (req, dets) in inflight.drain(..).zip(results) {
-                    // 写回：dets 挂到请求（简化：测试经 state 轮询；真实 P8 用槽）
-                    req.state.store(READY, Ordering::Release);
-                    let _resp = InferResp { dets };
+                    let (lock, cv) = &*req.result;
+                    let mut slots = lock.lock().unwrap();
+                    *slots = dets;
+                    drop(slots);
+                    cv.notify_one();
                 }
                 last_flush = Instant::now();
                 self.cv.notify_all();
@@ -122,16 +125,16 @@ impl DetectorPool {
 
     /// T2 提交推理并等待结果（park 在 condvar 上，不烧 CPU）。
     pub fn infer(&self, key: &EngineKey, input: Vec<u8>) -> Vec<Det> {
-        let req = InferReq {
-            key: key.clone(),
-            input,
-            state: AtomicU8::new(PENDING),
-        };
+        let req = InferReq::new(key.clone(), input);
         self.queue.lock().unwrap().push(req);
         self.cv.notify_one();
-        // 等待 worker 置 READY——简化：立即返回空（真实等待在 worker 写 state；
-        // 测试用同步后端直通）。
-        Vec::new()
+        // 等 worker 把 dets 写进 result 槽（park 在 result 的 condvar，不自旋）
+        let (lock, cv) = &*req.result;
+        let mut slots = lock.lock().unwrap();
+        while slots.is_empty() {
+            slots = cv.wait(slots).unwrap();
+        }
+        std::mem::take(&mut *slots)
     }
 
     pub fn shutdown(&self) {
@@ -164,25 +167,26 @@ impl InferBackend for SyncStubBackend {
 mod tests {
     use super::*;
 
-    /// DetectorPool 键传递：提交后 worker 按相同 key 调后端。
+    /// 端到端：worker 线程 + infer 提交 → **真实结果投递**（非空 Det 返回）。
     #[test]
-    fn pool_submits_with_engine_key() {
+    fn infer_returns_real_results_from_worker() {
         let pool = DetectorPool::new(SyncStubBackend);
-        // 测试直接调后端（worker 线程在集成测试里起；单测验证键传递）
         let key = EngineKey {
             model_id: "yolov8n".into(),
             device: "cpu".into(),
             input_w: 640,
             input_h: 640,
         };
-        let dets = pool.infer(&key, vec![0; 640 * 360]);
-        // 直通路径（worker 未起）返回空——真实等待由 worker 完成
-        assert!(dets.is_empty());
-        // 但后端直接可测
-        let out = SyncStubBackend.detect(&key, &[vec![0; 10]]);
-        assert_eq!(out.len(), 1);
+        // 起 worker 线程（真实路径：收请求→攒批→后端→写 result 槽→notify）
+        let pool_ref: &'static DetectorPool = Box::leak(Box::new(pool));
+        std::thread::spawn(move || pool_ref.run_worker());
+        std::thread::sleep(Duration::from_millis(10)); // worker 就绪
+
+        // infer 应阻塞等待并返回真实 dets（不再返回空）
+        let dets = pool_ref.infer(&key, vec![0; 640 * 360]);
+        assert_eq!(dets.len(), 1, "worker 应投递真实结果");
         assert_eq!(
-            out[0][0],
+            dets[0],
             Det {
                 x: 16,
                 y: 9,
@@ -190,6 +194,26 @@ mod tests {
                 h: 18
             }
         );
+
+        // 攒批：多个 infer 并发，全部拿到结果
+        let key2 = key.clone();
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let pool2 = pool_ref;
+                let k = key2.clone();
+                std::thread::spawn(move || {
+                    let d = pool2.infer(&k, vec![0; 640 * 360]);
+                    assert_eq!(d.len(), 1, "并发 infer 也应拿到结果");
+                    d
+                })
+            })
+            .collect();
+        for h in handles {
+            let d = h.join().unwrap();
+            assert_eq!(d.len(), 1);
+        }
+
+        pool_ref.shutdown();
     }
 
     /// 攒批语义：N 个输入 → 后端收到 N（同键）。
