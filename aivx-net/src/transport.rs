@@ -177,11 +177,10 @@ impl SipServer {
         }
     }
 
-    /// UDP 监听线程（回环端口）。
-    pub fn spawn_udp(&self, port: u16) -> std::io::Result<UdpSocket> {
-        let sock = UdpSocket::bind(("127.0.0.1", port))?;
+    /// UDP 监听线程（回环端口）。`self` 须为 Arc（closure 需 move 进线程）。
+    pub fn spawn_udp(self: Arc<Self>, port: u16) -> std::io::Result<UdpSocket> {
+        let sock = Arc::new(UdpSocket::bind(("127.0.0.1", port))?);
         self.running.store(true, Ordering::SeqCst);
-        let sock = Arc::new(sock);
         let running = self.running.clone();
         let server = self;
         thread::spawn(move || {
