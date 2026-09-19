@@ -1,9 +1,15 @@
-// AIVX 前端入口（React 18 + TS）。
+// AIVX 前端入口（React 18 + TS）。P8d：AIGX 式侧边栏布局 + 六页。
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { DevicesPage } from './pages/Devices';
+import { LivePage } from './pages/Live';
+import { RulesPage } from './pages/Dashboard';
+import { AlarmsPage } from './pages/Alarms';
+import { RecordingsPage } from './pages/Recordings';
+import { AgentPage } from './pages/Agent';
+import { Sidebar } from './components/Sidebar';
 import { RealApiClient } from './api';
 
 const api = new RealApiClient();
@@ -11,14 +17,16 @@ const api = new RealApiClient();
 function App() {
   return (
     <div className="app">
-      <nav className="nav">
-        <span className="nav-brand">AIVX</span>
-        <a href="/devices">设备</a>
-      </nav>
-      <main>
+      <Sidebar />
+      <main className="app-main">
         <Routes>
+          <Route path="/" element={<LivePage api={api} />} />
+          <Route path="/live" element={<LivePage api={api} />} />
           <Route path="/devices" element={<DevicesPage api={api} />} />
-          <Route path="/" element={<DevicesPage api={api} />} />
+          <Route path="/rules" element={<RulesPage api={api} />} />
+          <Route path="/alarms" element={<AlarmsPage api={api} />} />
+          <Route path="/recordings" element={<RecordingsPage api={api} />} />
+          <Route path="/agent" element={<AgentPage />} />
         </Routes>
       </main>
     </div>

@@ -20,6 +20,8 @@ export interface Device {
   manufacturer: string | null;
   model: string | null;
   capabilities: Capabilities;
+  /** P8d：录像模式（后端 CameraHandle 派生） */
+  record_mode?: 'off' | 'always' | 'motion';
 }
 
 /** 报警条目。 */
@@ -38,4 +40,26 @@ export interface Recording {
   file_path: string;
   start_ts: number;
   duration_secs: number;
+}
+
+/** healthz 的单路流状态（P8d：预览页数据源）。 */
+export interface StreamStatus {
+  id: string;
+  state: 'ok' | 'connecting' | 'reconnecting' | 'degraded' | 'stopped';
+  decode_frames: number;
+  inferences: number;
+}
+
+/** healthz 响应。 */
+export interface Healthz {
+  status: string;
+  max_seq: number;
+  version: string;
+  streams?: StreamStatus[];
+}
+
+/** 报警汇总（/api/alarms）。 */
+export interface AlarmsSummary {
+  active: number;
+  projected_events: number;
 }
