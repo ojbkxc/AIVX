@@ -28,8 +28,18 @@ jobs:
           npm ci --prefix frontend
           npm run typecheck --prefix frontend
           npm run build --prefix frontend
+      # P9b 起二进制常驻（18443 监听）——healthz 探活后杀，超时 10s 兜底
       - name: Self-check
-        run: ./target/release/aivx
+        run: |
+          AIVX_PORT=18999 AIVX_STATIC_DIR=static ./target/release/aivx &
+          PID=$!
+          for i in $(seq 1 50); do
+            if curl -sf http://127.0.0.1:18999/api/healthz >/dev/null 2>&1; then
+              echo "healthz OK"; kill $PID; exit 0
+            fi
+            sleep 0.2
+          done
+          echo "::error::healthz 10s 未就绪"; kill $PID; exit 1
       - name: Assemble bundle
         run: |
           mkdir -p bundle/aivx
