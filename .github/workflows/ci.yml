@@ -57,8 +57,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: perception 测试（串行——I1 全局分配计数器需独占）
         run: cargo test -p aivx-perception --locked -- --test-threads=1
-      - name: 其余测试（含 ADR-022/023/026/028 机器强制）
-        run: cargo test --workspace --locked
+      - name: 其余测试（含 ADR-022/023/026/028 机器强制；排除 perception 防重跑污染 I1）
+        run: cargo test --workspace --locked --exclude aivx-perception
       - name: 关键不变量测试名单（可视化确认）
         run: |
           cargo test --workspace -- --list 2>/dev/null | grep -E \
