@@ -74,3 +74,20 @@ jobs:
       - run: cargo build --release --locked
       - name: 骨架自检
         run: ./target/release/aivx
+
+  frontend:
+    name: Frontend (tsc + vitest + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: 安装依赖
+        run: npm ci --prefix frontend
+      - name: 类型检查
+        run: npm run typecheck --prefix frontend
+      - name: I10 机器验证（vitest：capabilities 数据驱动渲染）
+        run: npm test --prefix frontend
+      - name: 构建产物（输出到 static/）
+        run: npm run build --prefix frontend
