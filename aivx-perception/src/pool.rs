@@ -93,35 +93,42 @@ impl DetectorPool {
             if *self.stop.lock().unwrap() {
                 return;
             }
-            // 收集一批：阻塞到有请求，然后攒到 batch 或窗口超时
+            // 收集一批：阻塞到有请求，然后攒到 batch 或窗口超时。
+            // 若 inflight 已有待处理请求，不得阻塞等新请求（会死锁——窗口到期
+            // 必须处理 inflight），只能短暂 park 攒批。
             let mut reqs = self.queue.lock().unwrap();
-            if reqs.is_empty() {
-                while reqs.is_empty() && !*self.stop.lock().unwrap() {
+            if reqs.is_empty() && inflight.is_empty() {
+                while reqs.is_empty() && inflight.is_empty() && !*self.stop.lock().unwrap() {
                     reqs = self.cv.wait(reqs).unwrap();
                 }
-                continue;
             }
             while inflight.len() < self.batch && !reqs.is_empty() {
                 inflight.push(reqs.remove(0));
             }
             drop(reqs);
 
-            // 窗口到了就前向（不足 batch 也走，避免延迟堆积）
-            if inflight.len() >= self.batch || last_flush.elapsed() >= self.window {
-                let key = inflight[0].key.clone();
-                let inputs: Vec<Vec<u8>> = inflight.iter().map(|r| r.input.clone()).collect();
-                let results = self.backend.detect(&key, &inputs);
-                // 真实结果投递：每个请求的 result 槽写入 dets + notify（T2 等它）
-                for (req, dets) in inflight.drain(..).zip(results) {
-                    let (lock, cv) = &*req.result;
-                    let mut slots = lock.lock().unwrap();
-                    *slots = dets;
-                    drop(slots);
-                    cv.notify_one();
-                }
-                last_flush = Instant::now();
-                self.cv.notify_all();
+            // 窗口到了就前向（不足 batch 也走，避免延迟堆积）。
+            // inflight 非空但未到窗口：短暂 sleep 给攒批机会，然后下轮处理。
+            if inflight.is_empty() {
+                continue;
             }
+            if inflight.len() < self.batch && last_flush.elapsed() < self.window {
+                std::thread::sleep(Duration::from_millis(1));
+                continue; // 攒批窗口未到，先等更多请求
+            }
+            let key = inflight[0].key.clone();
+            let inputs: Vec<Vec<u8>> = inflight.iter().map(|r| r.input.clone()).collect();
+            let results = self.backend.detect(&key, &inputs);
+            // 真实结果投递：每个请求的 result 槽写入 dets + notify（T2 等它）
+            for (req, dets) in inflight.drain(..).zip(results) {
+                let (lock, cv) = &*req.result;
+                let mut slots = lock.lock().unwrap();
+                *slots = dets;
+                drop(slots);
+                cv.notify_one();
+            }
+            last_flush = Instant::now();
+            self.cv.notify_all();
         }
     }
 
