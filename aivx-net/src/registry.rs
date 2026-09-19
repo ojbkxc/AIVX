@@ -8,7 +8,7 @@
 //! 返回的是 `Box<dyn DeviceAdapter>`——驱动按需实例化，不引重依赖。
 //! I10 保持：驱动只报能力（Supported::No 是数据），无 set_ip/factory_reset。
 
-use crate::{AdapterError, Capabilities, Device, DeviceAdapter, DeviceCandidate};
+use crate::{Capabilities, Device, DeviceAdapter};
 
 /// 驱动元数据（注册表条目）。
 #[derive(Clone)]
