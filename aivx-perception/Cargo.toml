@@ -14,8 +14,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 # ort YOLO 后端（P8）——重依赖，feature gate 隔离（CI 默认不编译）。
-# download-binaries 会触发 ureq 下载 ONNX Runtime——CI 沙箱无网下载失败。
-# 改用 ort 默认 feature（本地构建；CI 只跑纯函数，不编译 ort）。
+# 用 ort **默认 features**（含 Session 类型）。download-binaries 是 opt-in
+#（不启用 → 不触发 ureq 下载 ONNX Runtime，避免 CI 沙箱无网失败）。
 [features]
 ort-yolo = ["dep:ort"]
 
