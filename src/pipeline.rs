@@ -10,6 +10,8 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
 use aivx_events::{AlarmId, Event};
+
+#[cfg(test)]
 use aivx_perception::bridge::PlaneBridge;
 
 use crate::memory::{MemEventStore, MemProjections, StoredEvent};
@@ -102,7 +104,7 @@ impl DbWriter {
             })
             .collect();
         self.store.append_batch(batch.clone()); // "事务提交"
-        // 2. 提交后顺序 fan-out（Projector 在此消费——链上唯一、不可丢）
+                                                // 2. 提交后顺序 fan-out（Projector 在此消费——链上唯一、不可丢）
         for se in batch {
             self.projections.record(se.seq); // P0：投影器以 record 代替
         }
@@ -233,6 +235,12 @@ mod tests {
     }
 
     /// ADR-026：重启后 seq 从 max+1 继续，不回退不重复。
+    ///
+    /// 注意：`assert_no_gaps` 校验的是**本次 Projector 会话**消费的 seq 相对起点
+    /// 连续。DbWriter 的两次会话各自 fan-out 给了同一个 projections（模拟重启后
+    /// 投影恢复的"追赶重放"），重放起点是 store 里 max_seq——所以这里用独立
+    /// projections 校验第二段（11 号）从 0 起点 +1 递增没有意义；正确断言是：
+    /// 重放后 Projector 从 store 拿到全部 11 条且 seq 本身单调（1..=11）。
     #[test]
     fn seq_recovers_after_restart() {
         let store = Arc::new(MemEventStore::new());
@@ -245,13 +253,19 @@ mod tests {
             db.await_manually();
         }
         let mut db2 = DbWriter::new(store.clone(), projections.clone());
-        assert_eq!(db2.next_seq_hint(), 11);
+        assert_eq!(db2.next_seq_hint(), 11, "重启后 seq 必须从 max+1 开始");
         db2.enqueue(alarm(99));
         db2.await_manually();
         assert_eq!(store.max_seq(), 11);
+        // 重启恢复：Projector 从头重放全部事件，seq 必须覆盖 1..=11 无洞
         let mut proj = Projector::new(store.clone(), projections.clone());
         proj.recover();
-        assert!(projections.assert_no_gaps(0));
+        let seqs = projections.consumed_seqs.lock().unwrap().clone();
+        assert_eq!(
+            seqs,
+            (1..=11u64).collect::<Vec<_>>(),
+            "重放必须完整覆盖 1..=11"
+        );
     }
 
     /// ADR-028：崩溃留下永真报警 → 重启清扫补 AlarmCleared。
