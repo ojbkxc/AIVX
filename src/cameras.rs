@@ -26,9 +26,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::mpsc::Receiver;
 
 use aivx_events::{DeviceId, Event};
 use aivx_perception::analyze::MotionStubAnalyzer;

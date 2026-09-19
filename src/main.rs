@@ -19,8 +19,9 @@ use axum::{Json, Router};
 use tower_http::services::ServeDir;
 
 use aivx_events::Event;
-use std::sync::atomic::Ordering;
 use aivx_net::Device;
+use aivx_perception::stream;
+use std::sync::atomic::Ordering;
 
 use aivx::memory::{MemEventStore, MemProjections};
 use aivx::pipeline::{forwarder, DbWriter, Projector};
@@ -86,7 +87,7 @@ async fn healthz(State(s): State<ApiState>) -> impl IntoResponse {
             let m = &c.bridge.metrics;
             serde_json::json!({
                 "id": c.device.id,
-                "state": aivx_perception::stream::state::name(m.stream_state.load(Ordering::Relaxed)),
+                "state": stream::state::name(m.stream_state.load(Ordering::Relaxed)),
                 "decode_frames": m.decode_frames.load(Ordering::Relaxed),
                 "inferences": m.inferences.load(Ordering::Relaxed),
             })
@@ -127,6 +128,12 @@ async fn main() {
     let mut projector = Projector::new(store.clone(), projections.clone());
     projector.recover(); // 启动重放（P9b 空库为 no-op，路径必须存在）
 
+    // CameraManager：YAML 设备清单 → 每路 T1/T2/T3 线程束（P8a 真实事件上游）
+    let cam_config = cfg.data_dir.join("config.yml");
+    let record_dir = cfg.data_dir.join("record");
+    let cameras = Arc::new(cameras::CameraManager::load_yaml(&cam_config, record_dir)?);
+    let cam_rx = cameras.event_rx();
+
     let state = ApiState {
         store: store.clone(),
         projections: projections.clone(),
@@ -139,11 +146,7 @@ async fn main() {
         "ADR-022 violated: fan-out has gaps"
     );
 
-    // forwarder：CameraManager 的全局汇聚 rx → DbWriter（P8a 起为真实事件上游）。
-    let cam_config = cfg.data_dir.join("config.yml");
-    let record_dir = cfg.data_dir.join("record");
-    let cameras = Arc::new(cameras::CameraManager::load_yaml(&cam_config, record_dir)?);
-    let cam_rx = cameras.event_rx();
+    // forwarder：CameraManager 的全局汇聚 rx → DbWriter。
     let fstore = store.clone();
     let fproj = projections.clone();
     tokio::spawn(async move {
