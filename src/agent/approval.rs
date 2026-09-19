@@ -25,11 +25,6 @@ pub struct AgentApprovals {
     remembered: Mutex<HashMap<String, Vec<String>>>,
 }
 
-impl AgentApprovals {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn is_remembered(&self, session_id: &str, tool: &str) -> bool {
         self.remembered
             .lock()
@@ -86,7 +81,7 @@ mod tests {
 
     #[test]
     fn approval_lifecycle() {
-        let ap = AgentApprovals::new();
+        let ap = AgentApprovals::default();
         let (req_id, rx) = ap.request("nvr_delete_device");
         assert_eq!(ap.pending_count(), 1);
         assert!(ap.resolve(&req_id, ApprovalResult::Approved));
@@ -97,7 +92,7 @@ mod tests {
 
     #[test]
     fn remember_allow_bypasses_next_time() {
-        let ap = AgentApprovals::new();
+        let ap = AgentApprovals::default();
         ap.remember("s-1", "nvr_delete_device");
         assert!(ap.is_remembered("s-1", "nvr_delete_device"));
         assert!(!ap.is_remembered("s-1", "nvr_snapshot"));

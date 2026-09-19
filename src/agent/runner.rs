@@ -52,6 +52,7 @@ pub enum AgentEvent {
 }
 
 /// 运行多轮循环（同步骨架；P6 包装为 async + SSE）。
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     provider: &dyn ChatProvider,
     approvals: &AgentApprovals,
@@ -188,7 +189,7 @@ mod tests {
     #[test]
     fn observer_runs_readonly_tool() {
         let provider = StubProvider;
-        let ap = AgentApprovals::new();
+        let ap = AgentApprovals::default();
         let ctx = ActionContext::stub();
         let events = run(
             &provider,
@@ -216,7 +217,7 @@ mod tests {
     fn observer_rejects_write_tool() {
         // 手动构造一次含 nvr_snapshot 的请求
         let ctx = ActionContext::stub();
-        let ap = AgentApprovals::new();
+        let ap = AgentApprovals::default();
         // 用自定义 provider 直接请求写工具
         struct WriteProvider;
         impl ChatProvider for WriteProvider {

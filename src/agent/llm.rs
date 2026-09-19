@@ -50,18 +50,12 @@ pub struct StubProvider;
 impl ChatProvider for StubProvider {
     fn chat(
         &self,
-        _messages: &[ChatMessage],
+        messages: &[ChatMessage],
         _tools: Option<&[Value]>,
     ) -> Result<LlmMessage, String> {
-        // 驱动 runner：第一轮请求工具，之后（工具结果喂回后）返回最终答复。
-        // 用 content 长度区分——含 "final" 关键字返回文本，否则返回工具调用。
-        let last_content = _messages.last().map(|m| m.content.as_str()).unwrap_or("");
-        if last_content.contains("final") {
-            Ok(LlmMessage {
-                content: "已完成查询，这是结果。".into(),
-                tool_calls: vec![],
-            })
-        } else {
+        // 驱动 runner：第一轮（仅用户消息）请求工具；之后（含工具结果回填）
+        // 返回最终答复——按消息数而非内容关键字判断，避免用户输入误触发。
+        if messages.len() <= 1 {
             Ok(LlmMessage {
                 content: String::new(),
                 tool_calls: vec![ToolCall {
@@ -69,6 +63,11 @@ impl ChatProvider for StubProvider {
                     function_name: "nvr_list_devices".into(),
                     arguments: "{}".into(),
                 }],
+            })
+        } else {
+            Ok(LlmMessage {
+                content: "已完成查询，这是结果。".into(),
+                tool_calls: vec![],
             })
         }
     }
@@ -113,12 +112,23 @@ mod tests {
     #[test]
     fn stub_provider_tool_then_final() {
         let p = StubProvider;
-        // 无 final → 返回工具调用
+        // 首条消息（1 条）→ 返回工具调用
         let r = p.chat(&[user_message("查设备".into())], None).unwrap();
         assert_eq!(r.tool_calls.len(), 1);
         assert_eq!(r.tool_calls[0].function_name, "nvr_list_devices");
-        // 含 final → 返回文本
-        let r2 = p.chat(&[user_message("final 总结".into())], None).unwrap();
+        // 含工具结果回填（多条）→ 返回文本
+        let r2 = p
+            .chat(
+                &[
+                    user_message("查设备".into()),
+                    ChatMessage {
+                        role: Role::Tool,
+                        content: "工具结果".into(),
+                    },
+                ],
+                None,
+            )
+            .unwrap();
         assert!(r2.tool_calls.is_empty());
         assert!(r2.content.contains("结果"));
     }
