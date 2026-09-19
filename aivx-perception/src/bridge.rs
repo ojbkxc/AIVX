@@ -80,7 +80,9 @@ impl PlaneBridge {
     fn handle_full(&self, ev: Event) {
         match ev.grade() {
             Grade::Critical => {
-                self.metrics.spilled_critical.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .spilled_critical
+                    .fetch_add(1, Ordering::Relaxed);
                 if let Some(dir) = &self.spill_dir {
                     // serde_json 仅 dev/此处用——events crate 自带 JSON 能力更干净：
                     // 走 aivx_events 的 serde 手写行格式，避免生产依赖 serde_json。
@@ -199,11 +201,17 @@ mod tests {
             let ev = alarm(i);
             bridge.emit(ev.clone());
         }
-        assert_eq!(bridge.metrics.dropped_info_events.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            bridge.metrics.dropped_info_events.load(Ordering::Relaxed),
+            0
+        );
         assert_eq!(bridge.metrics.spilled_critical.load(Ordering::Relaxed), 10);
         // Info 没溢出过（前 4 条刚好填满）——再发一条验证丢弃
         bridge.emit(stream_down());
-        assert_eq!(bridge.metrics.dropped_info_events.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            bridge.metrics.dropped_info_events.load(Ordering::Relaxed),
+            1
+        );
 
         // 排空队列
         for _ in 0..4 {

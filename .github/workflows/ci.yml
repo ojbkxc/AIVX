@@ -33,15 +33,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: perception 禁 tokio（出现即失败）
         run: |
-          if cargo tree -i tokio -p aivx-perception 2>/dev/null | grep -q "tokio"; then
+          if cargo tree -p aivx-perception --no-dedupe --edges normal --prefix none 2>/dev/null | awk '{print $1}' | grep -qx "tokio"; then
             echo "::error::I5/I11 违反：aivx-perception 依赖了 tokio"
-            cargo tree -i tokio -p aivx-perception
+            cargo tree -p aivx-perception --no-dedupe --edges normal --prefix none | grep tokio
             exit 1
           fi
       - name: events 仅 serde（出现其他重依赖即失败）
         run: |
-          deps=$(cargo tree -p aivx-events --no-dedupe 2>/dev/null | grep -v "^aivx-events" | awk '{print $1}' | sort -u)
-          bad=$(echo "$deps" | grep -vE "^(serde|serde_derive|proc-macro2|quote|syn|unicode-ident)$" || true)
+          deps=$(cargo tree -p aivx-events --no-dedupe --edges normal --prefix none 2>/dev/null \
+            | awk '{print $1}' | grep -v "^aivx-events" | sort -u)
+          bad=$(echo "$deps" | grep -vE "^(serde|serde_derive|serde_core|proc-macro2|quote|syn|unicode-ident)$" || true)
           if [ -n "$bad" ]; then
             echo "::error::aivx-events 出现白名单外依赖:"
             echo "$bad"

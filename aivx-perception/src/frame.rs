@@ -173,7 +173,8 @@ mod tests {
         assert_eq!(g, 3);
         let fr = s.read_latest().unwrap();
         assert_eq!(fr.gen, 3);
-        s.borrow_y(&fr, |y| assert!(y.iter().all(|&b| b == 3))).unwrap();
+        s.borrow_y(&fr, |y| assert!(y.iter().all(|&b| b == 3)))
+            .unwrap();
     }
 
     /// copy_nv12_to 拷完整帧且数据正确（推理唯一拷贝路径）。
