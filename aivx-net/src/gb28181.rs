@@ -279,7 +279,10 @@ mod tests {
         let resp = proc.process(&req).unwrap();
         assert!(resp.starts_with("SIP/2.0 200 OK"));
         assert!(resp.contains("o=34020000001320000001"));
-        assert!(resp.contains("s=live"), "点播应 s=live（InviteProcessor 会话语义）");
+        assert!(
+            resp.contains("s=live"),
+            "点播应 s=live（InviteProcessor 会话语义）"
+        );
         assert!(resp.contains("m=video"));
     }
 
