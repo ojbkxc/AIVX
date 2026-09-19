@@ -61,7 +61,10 @@ pub fn nms(candidates: &[(f32, f32, f32, f32, f32)], iou_threshold: f32) -> Vec<
     for &c in &sorted {
         let mut overlap = false;
         for &k in &kept {
-            if iou(c.0, c.1, c.2, c.3, k.0, k.1, k.2, k.3) > iou_threshold {
+            if iou(
+                c.0, c.1, c.2, c.3, k.x as f32, k.y as f32, k.w as f32, k.h as f32,
+            ) > iou_threshold
+            {
                 overlap = true;
                 break;
             }
