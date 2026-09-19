@@ -179,22 +179,26 @@ mod tests {
     use super::*;
 
     /// 端到端：worker 线程 + infer 提交 → **真实结果投递**（非空 Det 返回）。
+    ///
+    /// 生产路径验证：用 `Arc<DetectorPool>`（不是 Box::leak hack）——worker 线程
+    /// 持 Arc 共享池，与生产（CameraManager 持 Arc<DetectorPool> 跨路共享）一致。
     #[test]
     fn infer_returns_real_results_from_worker() {
-        let pool = DetectorPool::new(SyncStubBackend);
+        let pool = Arc::new(DetectorPool::new(SyncStubBackend));
         let key = EngineKey {
             model_id: "yolov8n".into(),
             device: "cpu".into(),
             input_w: 640,
             input_h: 640,
         };
-        // 起 worker 线程（真实路径：收请求→攒批→后端→写 result 槽→notify）
-        let pool_ref: &'static DetectorPool = Box::leak(Box::new(pool));
-        std::thread::spawn(move || pool_ref.run_worker());
+        // 起 worker 线程（真实路径：收请求→攒批→后端→写 result 槽→notify）。
+        // Arc 共享池 = 生产路径（多路摄像头共享同一 DetectorPool）。
+        let pool_worker = pool.clone();
+        std::thread::spawn(move || pool_worker.run_worker());
         std::thread::sleep(Duration::from_millis(10)); // worker 就绪
 
         // infer 应阻塞等待并返回真实 dets（不再返回空）
-        let dets = pool_ref.infer(&key, vec![0; 640 * 360]);
+        let dets = pool.infer(&key, vec![0; 640 * 360]);
         assert_eq!(dets.len(), 1, "worker 应投递真实结果");
         assert_eq!(
             dets[0],
@@ -206,11 +210,11 @@ mod tests {
             }
         );
 
-        // 攒批：多个 infer 并发，全部拿到结果
+        // 攒批：多个 infer 并发，全部拿到结果（Arc 跨线程共享）
         let key2 = key.clone();
         let handles: Vec<_> = (0..4)
             .map(|_| {
-                let pool2 = pool_ref;
+                let pool2 = pool.clone();
                 let k = key2.clone();
                 std::thread::spawn(move || {
                     let d = pool2.infer(&k, vec![0; 640 * 360]);
@@ -224,7 +228,7 @@ mod tests {
             assert_eq!(d.len(), 1);
         }
 
-        pool_ref.shutdown();
+        pool.shutdown();
     }
 
     /// 攒批语义：N 个输入 → 后端收到 N（同键）。
