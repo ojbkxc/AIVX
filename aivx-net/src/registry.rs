@@ -11,6 +11,7 @@
 use crate::{AdapterError, Capabilities, Device, DeviceAdapter, DeviceCandidate};
 
 /// 驱动元数据（注册表条目）。
+#[derive(Clone)]
 pub struct DriverSpec {
     pub name: &'static str,
     /// 厂商名匹配：返回 true 表示该驱动认识这个厂商。

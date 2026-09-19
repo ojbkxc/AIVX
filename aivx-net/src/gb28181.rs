@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 /// SIP 方法（GB28181 用到的子集）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SipMethod {
     Register,
     Invite,
