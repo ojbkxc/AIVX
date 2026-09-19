@@ -182,13 +182,12 @@ impl CameraManager {
             let device_id: DeviceId = name.clone();
             let (bridge, bridge_rx) = PlaneBridge::new(1024, None);
             let bridge = Arc::new(bridge);
-            // slot 先建独立实例给 T1（独占所有权），T2 共享用同一 Arc：
-            // decode_loop(cfg, slot: LatestFrameSlot) 按值收——T1 用 Arc::try_unwrap。
-            // 构建顺序：先 clone 给 T2 的 Arc，再 try_unwrap 给 T1。
-            let slot_t2 = Arc::new(LatestFrameSlot::new(cam.detect.width, cam.detect.height));
-            let slot_t1 = Arc::try_unwrap(slot_t2.clone())
-                .ok()
-                .expect("slot Arc must be unique right after creation");
+            // ADR-009 latest-wins 语义：一个 slot（Arc 共享），T1 唯一写者
+            // （begin_write_shared——seq 协议互斥读者），T2 读者（read_latest）。
+            // 修复记录：try_unwrap(clone) 必失败（克隆即双引用）——服务器实证 panic。
+            let slot = Arc::new(LatestFrameSlot::new(cam.detect.width, cam.detect.height));
+            let slot_t1 = slot.clone();
+            let slot_t2 = slot.clone();
 
             // 事件汇聚线程：bridge_rx → 全局 tx（单路内 FIFO 保序；转投 try_send
             // 不阻塞数据面——桥线程阻塞 recv 无害，它不是热路径）

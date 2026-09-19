@@ -73,8 +73,10 @@ impl DecodeCfg {
 
 /// T1 拉流循环入口。在专用 OS 线程跑（调用方 std::thread::spawn）。
 ///
-/// `slot` 由本函数独占（单写者所有权）；`bridge.control.stop` 是唯一退出信号。
-pub fn decode_loop(cfg: DecodeCfg, mut slot: LatestFrameSlot, bridge: Arc<PlaneBridge>) {
+/// `slot` 用 `Arc` 共享（T2 读者持同一 Arc）；**单写者约定**：本函数是唯一
+/// 写者（共享写 API `begin_write_shared`，seq 协议互斥读者）。
+/// `bridge.control.stop` 是唯一退出信号。
+pub fn decode_loop(cfg: DecodeCfg, slot: Arc<LatestFrameSlot>, bridge: Arc<PlaneBridge>) {
     let mut backoff = Backoff::default();
     let mut fail_streak: u32 = 0;
     bridge.set_stream_state(state::CONNECTING);
@@ -99,7 +101,7 @@ pub fn decode_loop(cfg: DecodeCfg, mut slot: LatestFrameSlot, bridge: Arc<PlaneB
                         return;
                     }
                     // read_exact 直写 slot 非活跃缓冲（零拷贝——I1 生产路径）
-                    match write_exact(&mut stdout, &mut slot, frame_size) {
+                    match write_exact(&mut stdout, &slot, frame_size) {
                         WriteOutcome::Frame(_) => {
                             if first_frame {
                                 first_frame = false;
@@ -135,20 +137,21 @@ pub fn decode_loop(cfg: DecodeCfg, mut slot: LatestFrameSlot, bridge: Arc<PlaneB
 /// 网络断都会造成字节错位，唯一正确动作是重启 ffmpeg（DESIGN.md §3.1 自愈）。
 fn write_exact(
     stdout: &mut impl Read,
-    slot: &mut LatestFrameSlot,
+    slot: &LatestFrameSlot,
     frame_size: usize,
 ) -> WriteOutcome {
     // 两段式：先 begin（锁缓冲+seq 变奇），再读，读完 commit。
     // 读半途失败：缓冲 seq 停在奇数——读者永不读它（安全），下轮 begin_write
     // 选同一非活跃缓冲会 debug_assert；所以失败必须 rollback（seq 回偶）。
-    let (idx, buf) = slot.begin_write();
+    // 共享写 API（P8a）：Arc 下的单写者约定——T1 是唯一调用方。
+    let (idx, buf) = slot.begin_write_shared();
     let mut read_total = 0usize;
     let mut chunk = [0u8; 16384];
     while read_total < frame_size {
         let want = chunk.len().min(frame_size - read_total);
         match stdout.read(&mut chunk[..want]) {
             Ok(0) => {
-                slot.rollback_write(idx);
+                slot.rollback_write_shared(idx);
                 return WriteOutcome::Eof;
             }
             Ok(n) => {
@@ -157,12 +160,12 @@ fn write_exact(
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => {
-                slot.rollback_write(idx);
+                slot.rollback_write_shared(idx);
                 return WriteOutcome::Eof;
             }
         }
     }
-    WriteOutcome::Frame(slot.commit_write(idx))
+    WriteOutcome::Frame(slot.commit_write_shared(idx))
 }
 
 /// 帧写入结果。`Frame(u64)` 载荷是帧代数——生产 decode_loop 只关心变体，

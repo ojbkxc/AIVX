@@ -70,6 +70,43 @@ impl LatestFrameSlot {
         self.commit_write(idx)
     }
 
+    /// 写者两段式（一）：锁非活跃缓冲（seq 偶→奇）——共享版（Arc 下的 T1）。
+    ///
+    /// 返回 (缓冲下标, 可写切片)——调用方把 IO 直读进这里，零拷贝。
+    /// 半途失败必须 [`rollback_write`]（seq 回偶），否则下次 begin_write 会断言。
+    ///
+    /// 单写者约定由调用方保证（T1 线程唯一持有 Arc<LatestFrameSlot> 的写权，
+    /// P8a：Arc 共享后写 API 走共享入口——内部锁保护 seq 协议）。
+    pub fn begin_write_shared(&self) -> (usize, &mut [u8]) {
+        let idx = 1 - self.active.load(Ordering::Acquire);
+        let cur = self.seq[idx].fetch_add(1, Ordering::AcqRel); // 偶→奇
+        debug_assert!(
+            cur.is_multiple_of(2),
+            "写入中途重入——协议违反(上次写入未 commit/rollback)"
+        );
+        // SAFETY: 单写者约定（T1 唯一）+ begin/commit 期间 T2 读者对该缓冲
+        // 只在 seq 为偶时进入（seq 已为奇 = 互斥达成）。同进程内、同帧池
+        // 生命周期内唯一可变借用——等价于独占所有权下的 &mut。
+        let buf = unsafe {
+            let ptr = self.bufs[idx].as_mut_ptr();
+            std::slice::from_raw_parts_mut(ptr, self.bufs[idx].len())
+        };
+        (idx, buf)
+    }
+
+    /// 写者两段式（二）：发布（seq 奇→偶 + active 翻转 + gen 递增）——共享版。
+    pub fn commit_write_shared(&self, idx: usize) -> u64 {
+        self.seq[idx].fetch_add(1, Ordering::AcqRel); // 奇→偶：数据可见
+        self.active.store(idx, Ordering::Release);
+        self.gen.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// 写者两段式（失败路径）：回滚未完成的写入（seq 奇→偶，帧不发布）——共享版。
+    pub fn rollback_write_shared(&self, idx: usize) {
+        let cur = self.seq[idx].fetch_add(1, Ordering::AcqRel);
+        debug_assert!(!cur.is_multiple_of(2), "rollback 未持锁的缓冲——协议违反");
+    }
+
     /// 写者两段式（一）：锁非活跃缓冲（seq 偶→奇）。
     ///
     /// 返回 (缓冲下标, 可写切片)——调用方把 IO 直读进这里，零拷贝。
