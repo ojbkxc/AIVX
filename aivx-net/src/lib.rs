@@ -9,6 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use gb28181::{parse_request, SipMethod, SipObserver, SipProcessor, SipRequest};
+
 /// 设备/摄像头（协议层视角的领域模型）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {
@@ -163,6 +165,9 @@ pub mod registry;
 
 /// GB28181 SIP 信令（P7 骨架 + P8 真实 UDP/TCP + Digest）。
 pub mod gb28181;
+
+/// GB28181 SIP 传输层（P8：UDP/TCP + Digest 鉴权）。
+pub mod transport;
 
 /// ONVIF SOAP 客户端（P8：真实 HTTP POST + Digest + XML 构造）。
 pub mod onvif;
