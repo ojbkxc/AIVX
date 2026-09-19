@@ -90,7 +90,7 @@ impl Condition {
                 point_in_polygon(cx, cy, poly)
             }),
             Condition::CrossedLine { a, b, forward } => tracks.iter().any(|t| {
-                let Some((pcx, pcy)) = (t.prev_cx, t.prev_cy) else {
+                let (Some(pcx), Some(pcy)) = (t.prev_cx, t.prev_cy) else {
                     return false;
                 };
                 cross_line_direction(
@@ -254,10 +254,9 @@ mod tests {
     #[test]
     fn i8_dedup_only_fires_on_transition() {
         let mut eng = RuleEngine::new(vec![AlarmRule::new("r-zone", Condition::InZone(zone()))]);
-        let t = vec![sq_track(1, 100, 100)]; // (100+5)/640≈0.16? 不——用 320,180 帧
         let (w, h) = (640u32, 360u32);
-        // 中心 (105,105)/640,360 = (0.16,0.29) 在 0.2..0.8 内? x=0.16 不在——改位置
-        let t = vec![sq_track(1, 256, 144)]; // 中心 (261,149)/640,360=(0.41,0.41) 在 zone
+        // 中心 (261,149)/640,360=(0.41,0.41) 在 zone 0.2..0.8 内
+        let t = vec![sq_track(1, 256, 144)];
         let fires1 = eng.evaluate(&t, w, h);
         assert_eq!(fires1.len(), 1, "首帧命中应触发");
         // 连续 50 帧同目标——不得重复

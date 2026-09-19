@@ -8,8 +8,6 @@
 //! - `max_missed`：连续 N 帧失配则轨迹结束
 //! - 输出 (active, ended)：规则状态机消费 active；TrackDisappeared 事件消费 ended
 
-use std::collections::HashMap;
-
 use crate::analyze::Det;
 
 /// 轨迹 ID（数据面内单调分配；跨重启不持久——轨迹是会话级概念）。
@@ -64,6 +62,9 @@ pub struct ByteTracker {
     ended_buf: Vec<TrackId>,
     /// 新确认的轨迹（appeared 事件用）。
     appeared_buf: Vec<Track>,
+    /// I1 scratch：匹配位图（每帧 clear+resize 复用，update 零分配）。
+    det_matched_buf: Vec<bool>,
+    tr_matched_buf: Vec<bool>,
 }
 
 impl ByteTracker {
@@ -76,18 +77,29 @@ impl ByteTracker {
             next_id: 1,
             ended_buf: Vec::with_capacity(8),
             appeared_buf: Vec::with_capacity(8),
+            det_matched_buf: Vec::with_capacity(16),
+            tr_matched_buf: Vec::with_capacity(32),
         }
     }
 
     /// 喂入一帧检测。返回当前确认活跃轨迹（含位置更新）。
     ///
     /// `ended`/`appeared` 经 `take_ended`/`take_appeared` 取走（零拷贝转移）。
+    ///
+    /// I1：匹配位图复用预分配 scratch（`det_matched_buf`/`tr_matched_buf`），
+    /// update 本身零堆分配（无新轨迹时）。
     pub fn update(&mut self, dets: &[Det]) -> &[Track] {
         self.ended_buf.clear();
         self.appeared_buf.clear();
         // 贪心匹配：每个检测找 IoU 最大且超阈值的轨迹
-        let mut det_matched = vec![false; dets.len()];
-        let mut tr_matched = vec![false; self.tracks.len()];
+        let det_matched_buf = std::mem::take(&mut self.det_matched_buf);
+        let mut det_matched = det_matched_buf;
+        det_matched.clear();
+        det_matched.resize(dets.len(), false);
+        let tr_buf = std::mem::take(&mut self.tr_matched_buf);
+        let mut tr_matched = tr_buf;
+        tr_matched.clear();
+        tr_matched.resize(self.tracks.len(), false);
         for (di, det) in dets.iter().enumerate() {
             if det_matched[di] {
                 continue;
@@ -170,6 +182,9 @@ impl ByteTracker {
             }
             self.next_id += 1;
         }
+        // 归还 scratch（下一帧复用——I1 零分配）
+        self.det_matched_buf = det_matched;
+        self.tr_matched_buf = tr_matched;
         &self.tracks
     }
 
@@ -267,5 +282,25 @@ mod tests {
         assert_eq!(act.len(), 2);
         let ids: Vec<TrackId> = act.iter().map(|a| a.id).collect();
         assert!(ids.contains(&1) && ids.contains(&2));
+    }
+
+    /// **I1 机器强制**：update 稳态零堆分配（无新轨迹时）。
+    ///
+    /// 匹配位图复用预分配 scratch；新轨迹出现允许分配（罕见路径）。
+    #[test]
+    fn i1_update_zero_allocation_steady_state() {
+        use crate::alloc::count_scope;
+        let mut t = ByteTracker::new();
+        let dets = [det(0, 0), det(100, 100)];
+        for _ in 0..10 {
+            t.update(&dets); // 建立轨迹 + scratch 预热
+        }
+        let (n, _) = count_scope(|| {
+            for _ in 0..50 {
+                t.update(&dets);
+            }
+            t.active().count()
+        });
+        assert_eq!(n, 0, "I1 违反：稳态 update 发生 {n} 次堆分配");
     }
 }

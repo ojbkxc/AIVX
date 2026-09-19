@@ -48,7 +48,7 @@ pub fn count_scope<T>(f: impl FnOnce() -> T) -> (u64, u64) {
     ALLOCS.store(0, Ordering::Relaxed);
     BYTES.store(0, Ordering::Relaxed);
     COUNTING.store(1, Ordering::Relaxed);
-    let out = f();
+    let _out = f();
     COUNTING.store(0, Ordering::Relaxed);
     (
         ALLOCS.load(Ordering::Relaxed),
