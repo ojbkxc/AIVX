@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use super::{parse_request, SipObserver, SipRequest};
+use super::{parse_request, SipObserver};
 
 /// Digest 鉴权参数（RFC 2617）。
 pub struct DigestParams {
