@@ -44,7 +44,7 @@ impl Registry {
             matches_manufacturer: |_| false,
             probe: None,
             priority: 0,
-            factory: || Box::new(crate::OnvifAdapter),
+            factory: || Box::new(crate::OnvifAdapter::default()),
         };
         // 占位：海康/大华驱动在 SDK feature 下追加（P6 之后的扩展点）。
         Self { specs: vec![onvif] }
@@ -128,14 +128,14 @@ mod tests {
                     matches_manufacturer: |m| m == "TP-LINK",
                     probe: None,
                     priority: 1,
-                    factory: || Box::new(crate::OnvifAdapter),
+                    factory: || Box::new(crate::OnvifAdapter::default()),
                 },
                 DriverSpec {
                     name: "onvif",
                     matches_manufacturer: |_| false,
                     probe: None,
                     priority: 0,
-                    factory: || Box::new(crate::OnvifAdapter),
+                    factory: || Box::new(crate::OnvifAdapter::default()),
                 },
             ],
         };
@@ -168,14 +168,14 @@ mod tests {
                         }
                     }),
                     priority: 2,
-                    factory: || Box::new(crate::OnvifAdapter),
+                    factory: || Box::new(crate::OnvifAdapter::default()),
                 },
                 DriverSpec {
                     name: "onvif",
                     matches_manufacturer: |_| false,
                     probe: None,
                     priority: 0,
-                    factory: || Box::new(crate::OnvifAdapter),
+                    factory: || Box::new(crate::OnvifAdapter::default()),
                 },
             ],
         };
