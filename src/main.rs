@@ -103,7 +103,7 @@ async fn main() {
 
     // ── 事件链（ADR-022/026/028 已由 pipeline 单测机器强制）──
     let store = Arc::new(MemEventStore::new());
-    let projections = Arc::new(MemProjections::new());
+    let projections = Arc::new(MemProjections::default());
     let db = Arc::new(tokio::sync::Mutex::new(DbWriter::new(
         store.clone(),
         projections.clone(),
@@ -129,12 +129,7 @@ async fn main() {
     let fstore = store.clone();
     let fproj = projections.clone();
     tokio::spawn(async move {
-        forwarder(
-            rx,
-            DbWriter::new(fstore, fproj),
-            None,
-        )
-        .await;
+        forwarder(rx, DbWriter::new(fstore, fproj), None).await;
     });
     // tx 存活保持 channel 不关——forwarder 常驻 drain（P8 数据面从此接入）
     std::mem::forget(tx);
