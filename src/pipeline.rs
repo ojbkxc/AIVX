@@ -135,7 +135,6 @@ impl DbWriter {
 /// Projector：从 events 重放/增量投影（DESIGN.md §5.3 + ADR-028 僵尸清扫）。
 pub struct Projector {
     store: Arc<MemEventStore>,
-    projections: Arc<MemProjections>,
     checkpoint: u64,
     /// 活跃报警（alarm_id → raised seq；清扫用）。
     active_alarms: HashMap<AlarmId, u64>,
@@ -144,11 +143,10 @@ pub struct Projector {
 }
 
 impl Projector {
-    pub fn new(store: Arc<MemEventStore>, projections: Arc<MemProjections>) -> Self {
+    pub fn new(store: Arc<MemEventStore>, _projections: Arc<MemProjections>) -> Self {
         let checkpoint = 0; // 生产从 checkpoint 表读；P0 从 0
         Self {
             store,
-            projections,
             checkpoint,
             active_alarms: Default::default(),
             max_alarm_ttl_ticks: 10,

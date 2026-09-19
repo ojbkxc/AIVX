@@ -185,11 +185,13 @@ mod tests {
         let (id2, _, _) = alarm_ev("a-2");
         cog.put_evidence(id1.clone(), vec![1]);
         cog.put_evidence(id2.clone(), vec![1]);
+        // 时间戳单位为单调钟纳秒。cooldown=6s。
+        // t1=1s：触发，冷却记录到 1s。
         assert!(cog.on_alarm(&id1, rule, dev, 1_000_000_000).is_some());
-        // 3s 后：冷却内 → 跳过
-        assert!(cog.on_alarm(&id2, rule, dev, 1_003_000_000).is_none());
-        // 7s 后：冷却过 → 分析
-        assert!(cog.on_alarm(&id2, rule, dev, 1_007_000_000).is_some());
+        // t2=4s：距 1s 仅 3s，仍在 6s 冷却内 → 跳过。
+        assert!(cog.on_alarm(&id2, rule, dev, 4_000_000_000).is_none());
+        // t3=8s：距 1s 已 7s，超过冷却 → 分析（id2 证据已在）。
+        assert!(cog.on_alarm(&id2, rule, dev, 8_000_000_000).is_some());
     }
 
     /// LLM 输出非 JSON → 跳过洞察，报警不受影响。
