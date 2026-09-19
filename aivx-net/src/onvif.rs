@@ -174,11 +174,13 @@ fn parse_capabilities(xml: &str) -> Capabilities {
 
 /// 从 GetProfiles 响应提取 profile token。
 fn extract_profile_tokens(xml: &str) -> Vec<String> {
-    // 简化：找所有 token="xxx" 属性（Profile token 提取精确）
+    // 简化：找所有 token="xxx" 属性（Profile token 提取精确）。
+    // 按 token=" 拆分后，第一个片段是前缀（不含 token），后续片段才是
+    // 属性值直到下一个双引号。片段必须含双引号才说明它紧跟在 token=" 后。
     let mut tokens = Vec::new();
     for part in xml.split("token=\"") {
-        if part.is_empty() {
-            continue;
+        if !part.contains('"') {
+            continue; // 前缀或无闭合引号——不是 token 区域
         }
         let token = part.split('"').next().unwrap_or("").to_string();
         if !token.is_empty() {
