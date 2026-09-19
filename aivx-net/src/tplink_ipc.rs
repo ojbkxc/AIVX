@@ -35,11 +35,7 @@ pub struct IpcSession {
 /// - -40106: 动作/键名不存在
 /// - -40210: 段不存在
 /// - -64302: 参数名/格式错误
-pub fn login(
-    host: &str,
-    username: &str,
-    password: &str,
-) -> Result<IpcSession, String> {
+pub fn login(host: &str, username: &str, password: &str) -> Result<IpcSession, String> {
     let http = reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(8))
@@ -67,7 +63,10 @@ pub fn login(
         hasher.update(format!("{}:{}", password, nonce).as_bytes());
         hasher.finalize().into()
     };
-    let passmd5 = digest.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    let passmd5 = digest
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
 
     // 3. 登录
     let login_resp: Value = http
@@ -91,11 +90,7 @@ pub fn login(
         .ok_or_else(|| format!("login failed: {}", login_resp))?
         .to_string();
 
-    Ok(IpcSession {
-        http,
-        base,
-        stok,
-    })
+    Ok(IpcSession { http, base, stok })
 }
 
 impl IpcSession {
@@ -109,7 +104,10 @@ impl IpcSession {
             .map_err(|e| e.to_string())?
             .json()
             .map_err(|e| e.to_string())?;
-        let code = resp.get("error_code").and_then(|v| v.as_i64()).unwrap_or(-1);
+        let code = resp
+            .get("error_code")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1);
         if code != 0 {
             return Err(format!("ipc error {}", code));
         }
@@ -170,7 +168,11 @@ impl IpcSession {
     pub fn save_preset(&self, name: &str) -> Result<u32, String> {
         let v = self.action("preset", "set_preset", json!({"name": name}))?;
         v.get("id")
-            .and_then(|x| x.as_str().and_then(|s| s.parse().ok()).or_else(|| x.as_u64().map(|n| n as u32)))
+            .and_then(|x| {
+                x.as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| x.as_u64().map(|n| n as u32))
+            })
             .ok_or_else(|| format!("set_preset no id: {}", v))
     }
 
@@ -271,10 +273,7 @@ impl IpcDevice {
     }
 
     /// 取有效会话（无则登录；-40401 自动重登一次）。
-    fn with_session<T>(
-        &self,
-        f: impl Fn(&IpcSession) -> Result<T, String>,
-    ) -> Result<T, String> {
+    fn with_session<T>(&self, f: impl Fn(&IpcSession) -> Result<T, String>) -> Result<T, String> {
         let mut guard = self.session.lock().unwrap();
         if guard.is_none() {
             *guard = Some(login(&self.host, &self.username, &self.password)?);

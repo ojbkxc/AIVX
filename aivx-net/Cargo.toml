@@ -10,6 +10,7 @@ license-file = "../LICENSE"
 [dependencies]
 aivx-events = { path = "../aivx-events" }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 md-5 = "0.10"
