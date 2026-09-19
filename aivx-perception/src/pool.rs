@@ -53,7 +53,9 @@ pub struct EngineKey {
 }
 
 /// 推理后端（P8 用 ort YOLO；测试用假后端）。
-pub trait InferBackend: Send {
+/// `Send + Sync`：worker 线程需共享 `&self`（thread::spawn 要求 'static + Send，
+/// 而 `Box<dyn InferBackend>` 跨线程共享要求 Sync）。
+pub trait InferBackend: Send + Sync {
     fn detect(&self, key: &EngineKey, inputs: &[Vec<u8>]) -> Vec<Vec<Det>>;
 }
 
@@ -126,10 +128,12 @@ impl DetectorPool {
     /// T2 提交推理并等待结果（park 在 condvar 上，不烧 CPU）。
     pub fn infer(&self, key: &EngineKey, input: Vec<u8>) -> Vec<Det> {
         let req = InferReq::new(key.clone(), input);
+        // 先把 result 槽 Arc clone 出来，再 push（req 被 move 进队列后仍能等它）
+        let result = req.result.clone();
         self.queue.lock().unwrap().push(req);
         self.cv.notify_one();
         // 等 worker 把 dets 写进 result 槽（park 在 result 的 condvar，不自旋）
-        let (lock, cv) = &*req.result;
+        let (lock, cv) = &*result;
         let mut slots = lock.lock().unwrap();
         while slots.is_empty() {
             slots = cv.wait(slots).unwrap();
