@@ -31,6 +31,8 @@ pub mod stream;
 pub mod track;
 #[cfg(feature = "ort-yolo")]
 pub mod yolo;
+#[cfg(all(feature = "ort-yolo", test))]
+pub mod yolo_integration;
 pub mod yolo_math;
 
 /// 单调钟纳秒（数据面唯一时钟，DESIGN.md §18 混合时钟）。
