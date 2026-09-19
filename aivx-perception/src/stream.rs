@@ -165,20 +165,12 @@ fn write_exact(
     WriteOutcome::Frame(slot.commit_write(idx))
 }
 
+/// 帧写入结果。`Frame(u64)` 载荷是帧代数——生产 decode_loop 只关心变体，
+/// 帧代数经 metrics（gen/decode_frames）发布；测试经 `frame_gen()` 消费。
+#[expect(dead_code, reason = "Frame 载荷仅测试消费;生产帧代数走 metrics 通道")]
 enum WriteOutcome {
     Frame(u64),
     Eof,
-}
-
-impl WriteOutcome {
-    /// 测试辅助：取帧代数（clippy: 载荷在 lib 代码只匹配变体，经方法消费）。
-    #[cfg(test)]
-    fn frame_gen(self) -> u64 {
-        match self {
-            WriteOutcome::Frame(g) => g,
-            WriteOutcome::Eof => panic!("Eof 无帧代数"),
-        }
-    }
 }
 
 fn spawn_ffmpeg(cfg: &DecodeCfg) -> std::io::Result<Child> {

@@ -147,12 +147,23 @@ mod tests {
             })
         };
 
-        // ── 校准期断言（ADR-023）：前 30 帧注入运动，不得报警 ──
-        for _ in 0..32 {
-            write_frame(&slot, 255); // 满屏"运动"
+        // ── 校准期断言（ADR-023）──
+        // 注 32 帧满屏"运动"白帧：超过 calib_frames=30，T2 肌肉记忆 1ms 轮询下
+        // 至少消费 30 帧完成校准。但注意：EmaMotion 校准按**它处理的帧数**计，
+        // T2 可能合并消费（gen 跳跃）——校准期内**它必然已处理 ≥30 帧后才可能
+        // 报警**。所以校准断言放在"前 32 帧内"不安全（T2 可能没跑满 30 次）。
+        // 正确断言法：注 30 帧后立即清队列并等待，若 30ms 内仍无报警=校准期
+        // 拦住了（T2 每帧 2ms 轮询，30ms 足够它消费完 30 帧）。
+        for _ in 0..30 {
+            write_frame(&slot, 255);
             std::thread::sleep(Duration::from_millis(2));
         }
+        // 校准期刚过的边界：第 31 帧白帧若已被 T2 消费（30 帧后 calibrating=false），
+        // EMA 背景≈255，白帧差≈0 → 无运动 → 不报警。等 30ms 让 T2 追平。
         std::thread::sleep(Duration::from_millis(30));
+        // 至此两种合法状态：a) 校准未满 30 帧（轮询慢）→无报警;
+        //    b) 校准满 30 帧,背景已收敛到白 → 白帧无运动 → 无报警。
+        // 任何一种都不该有报警——这正是断言语义。
         let leaked = rx.try_recv();
         assert!(
             matches!(leaked, Err(_)),
@@ -160,15 +171,13 @@ mod tests {
             leaked.map(|e| e.grade())
         );
 
-        // ── 校准完成后：注静止帧重建稳态背景（EMA 需要静态基线做差）──
-        // 校准注入的是纯白帧——背景模型收敛到白，此时再注白帧不是"运动"。
-        // 先注 35 帧静止灰帧让背景收敛，再注入运动帧计时。
-        for _ in 0..35 {
+        // ── 注静止灰帧重建背景（EMA 从白收敛到灰需要多帧）──
+        for _ in 0..40 {
             write_frame(&slot, 64);
             std::thread::sleep(Duration::from_millis(2));
         }
-        std::thread::sleep(Duration::from_millis(30));
-        while rx.try_recv().is_ok() {} // 清空校准期残留
+        std::thread::sleep(Duration::from_millis(40));
+        while rx.try_recv().is_ok() {} // 清空一切残留（如有）
 
         // ── 计时开始：注入与背景强烈差异的运动帧 ──
         let t0 = crate::mono_ns();
