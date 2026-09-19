@@ -13,5 +13,14 @@ aivx-events = { path = "../aivx-events" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-# P0 不引 ort/opencv —— LatestFrameSlot/PlaneBridge/EMA 先行，推理 P2 落地。
+# ort YOLO 后端（P8）——重依赖，feature gate 隔离（CI 默认不编译）。
+[features]
+ort-yolo = ["dep:ort"]
+
+[dependencies.ort]
+version = "2.0.0-rc.6"
+optional = true
+default-features = false
+features = ["download-binaries"]
+
 # 禁 tokio（I5/I11）：CI 断言 cargo tree -i tokio -p aivx-perception 为空。
