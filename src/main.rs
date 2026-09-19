@@ -115,7 +115,7 @@ async fn smoke_event_chain(state: &ApiState) {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let cfg = Config::from_env();
     std::fs::create_dir_all(&cfg.data_dir).ok();
 
@@ -182,5 +182,6 @@ async fn main() {
     );
 
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
-    axum::serve(listener, app).await.expect("serve");
+    axum::serve(listener, app).await?;
+    Ok(())
 }
