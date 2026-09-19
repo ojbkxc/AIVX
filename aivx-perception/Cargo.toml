@@ -14,13 +14,17 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 # ort YOLO 后端（P8）——重依赖，feature gate 隔离（CI 默认不编译）。
-# 用 ort **默认 features**（含 Session 类型）。download-binaries 是 opt-in
-#（不启用 → 不触发 ureq 下载 ONNX Runtime，避免 CI 沙箱无网失败）。
+# ort 默认 features 含 download-binaries（下载预编译 ONNX Runtime，需网络）。
+# CI 沙箱无网 → 编译失败。显式指定 features 去掉 download-binaries，
+# 保留 Session API 所需（api-27 + ndarray + std）。本地有网环境可加回
+# download-binaries 自动下载 ONNX Runtime。
 [features]
 ort-yolo = ["dep:ort"]
 
 [dependencies.ort]
-version = "2.0.0-rc.6"
+version = "2.0.0-rc.13"
 optional = true
+default-features = false
+features = ["api-27", "ndarray", "std", "copy-dylibs"]
 
 # 禁 tokio（I5/I11）：CI 断言 cargo tree -i tokio -p aivx-perception 为空。
