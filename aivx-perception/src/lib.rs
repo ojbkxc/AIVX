@@ -21,6 +21,7 @@ static GLOBAL: crate::alloc::CountingAlloc = crate::alloc::CountingAlloc;
 pub mod alloc;
 pub mod analyze;
 pub mod bridge;
+pub mod config;
 pub mod frame;
 pub mod motion;
 pub mod record;

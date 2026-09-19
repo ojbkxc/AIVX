@@ -132,6 +132,7 @@ pub struct RuleFire {
 /// 状态：Idle →（条件真）→ Active（发 AlarmRaised 一次）
 ///       →（条件假）→ Idle（发 AlarmCleared 一次）
 /// 连续帧条件保持真：**不重复发**。
+#[derive(Clone)]
 pub struct AlarmRule {
     pub rule_id: String,
     pub condition: Condition,
