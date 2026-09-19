@@ -53,10 +53,15 @@ impl OrtYoloBackend {
     }
 
     /// 用新模型 key 取可变 session（run 需 &mut self）。
-    fn session_for(&self, key: &EngineKey) -> Result<std::sync::MutexGuard<'_, ort::session::Session>, String> {
+    fn session_for(
+        &self,
+        key: &EngineKey,
+    ) -> Result<std::sync::MutexGuard<'_, ort::session::Session>, String> {
         let mut sessions = self.sessions.lock().unwrap();
         if sessions.get(&key.model_id).is_some() {
-            Ok(std::sync::MutexGuard::map(sessions, |m| m.get_mut(&key.model_id).unwrap()))
+            Ok(std::sync::MutexGuard::map(sessions, |m| {
+                m.get_mut(&key.model_id).unwrap()
+            }))
         } else {
             Err(format!("模型 {} 未加载", key.model_id))
         }
