@@ -9,5 +9,6 @@
 
 pub mod agent;
 pub mod cognition;
+pub mod cognition_llm;
 pub mod memory;
 pub mod pipeline;
