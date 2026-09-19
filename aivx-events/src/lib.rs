@@ -45,7 +45,7 @@ pub struct TrackSnapshot {
 }
 
 /// LLM 洞察（cognition 回填，DESIGN.md §10）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Insight {
     pub is_false_positive: bool,
     /// low / medium / high

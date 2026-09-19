@@ -116,7 +116,7 @@ mod tests {
             prev_cy: Some(149.0),
         };
         let fires = snap.rules[0].evaluate(std::slice::from_ref(&track), w, h);
-        assert_eq!(fires.len(), 1, "v1 规则应触发");
+        assert!(fires.is_some(), "v1 规则应触发");
         assert!(snap.rules[0].is_active());
 
         // I9 语义：热重载 = 状态重置（ADR-027）——新快照的规则从 Idle 开始
