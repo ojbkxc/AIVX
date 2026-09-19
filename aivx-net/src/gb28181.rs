@@ -86,14 +86,9 @@ pub trait SipProcessor: Send + Sync {
 }
 
 /// 观察者：按 method 分发（抄 ruoyi SIPProcessorObserver）。
+#[derive(Default)]
 pub struct SipObserver {
     handlers: HashMap<SipMethod, Box<dyn SipProcessor>>,
-}
-
-impl Default for SipObserver {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl SipObserver {

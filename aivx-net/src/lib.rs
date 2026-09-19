@@ -122,15 +122,10 @@ pub trait DeviceAdapter: Send + Sync {
 ///
 /// 实际 SOAP 传输（HTTP POST + Digest 鉴权 + XML 构造）在 `onvif.rs`；
 /// 本桩保留 trait 契约与 I10 语义，真实 XML 由 onvif.rs 补。
+#[derive(Default)]
 pub struct OnvifAdapter {
     /// SOAP 客户端（None = 桩模式，能力全 No 但契约正确）。
     client: Option<crate::onvif::OnvifClient>,
-}
-
-impl Default for OnvifAdapter {
-    fn default() -> Self {
-        Self { client: None }
-    }
 }
 
 impl DeviceAdapter for OnvifAdapter {
