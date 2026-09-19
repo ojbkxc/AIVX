@@ -23,14 +23,8 @@ pub trait FrameAnalyzer: Send {
     fn detect(&mut self, nv12: &[u8]) -> Vec<Det>;
 }
 
-/// 检测结果。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Det {
-    pub x: u32,
-    pub y: u32,
-    pub w: u32,
-    pub h: u32,
-}
+/// 检测结果（统一用 pool::Det——DetectorPool 的产物，避免双类型转换）。
+pub use crate::pool::Det;
 
 /// 运动即报一个框的桩（驱动 I3 断言；生产换 OrtYoloBackend）。
 pub struct MotionStubAnalyzer;
