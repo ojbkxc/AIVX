@@ -66,6 +66,11 @@ impl MemProjections {
         self.consumed_seqs.lock().unwrap().push(seq);
     }
 
+    /// 已投影事件数（healthz 暴露用）。
+    pub fn projected_count(&self) -> usize {
+        self.consumed_seqs.lock().unwrap().len()
+    }
+
     /// 断言 Projector 收到的 seq 连续无洞（ADR-022 的机器强制）。
     pub fn assert_no_gaps(&self, from: u64) -> bool {
         let seqs = self.consumed_seqs.lock().unwrap();
