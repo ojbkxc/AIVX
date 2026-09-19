@@ -1,10 +1,12 @@
-# AIVX — 架构设计蓝本 v2.1（DESIGN.md）
+# AIVX — 架构设计蓝本 v2.2（DESIGN.md）
 
 > **定位**：AIVX（AI Video eXtended）高性能自托管 AI NVR 的架构权威蓝本。
 > **标准**：每个决策回答四件事——**参照来源（具体文件）→ Rust 落地 → 为什么 → 反例教训**。
 > **版本声明**：v2 推翻了 v1 的四个理论（双平面/最新帧槽/诚实零拷贝/投影器）；
-> v2.1 是对 v2 的自检修正——补回 v2 重写时丢失的 6 个子系统，并修掉 3 处技术错误
-> （数据面误用 tokio::process、DbWriter select 模式、SQLite 分区幻觉）。推翻记录见 §20 ADR。
+> v2.1 自检修正 3 处技术错误、补回 6 个丢失子系统；**v2.2 是第二轮自检**——修掉 1 处
+> 宽限期数学错误、1 处违反 I12 的正确性 bug（broadcast 丢事件致投影漂移）、以及 7 处
+> 设计缺口（证据编码阻塞热路径 / 单模型池假设 / 热更新无落地机制 / 运动校准期 /
+> seq 崩溃恢复 / 僵尸报警 / CQRS 边界）。推翻记录见 §20 ADR。
 
 ---
 
@@ -12,7 +14,7 @@
 
 | # | 不变量 | 强制方式（机器可验证） |
 |---|---|---|
-| I1 | **帧数据 0 复制、0 编解码、0 格式转换直到推理预处理；预处理写预分配 scratch；报警证据编码按"每报警一次"计，不进每帧热路径** | `dhat`/计数分配器包住单帧分析循环，CI 断言 `allocs_per_frame ≤ N`（报警帧的 per-alarm 证据单独断言） |
+| I1 | **帧数据 0 复制、0 编解码、0 格式转换直到推理预处理；预处理写预分配 scratch；证据编码在独立线程，不在分析热路径** | `dhat`/计数分配器包住单帧分析循环，CI 断言 `allocs_per_frame ≤ N`（报警帧同样断言——证据编码已移出热路径，ADR-021） |
 | I2 | **分析循环绝不碰 DB、绝不阻塞等待** | 热路径只允许 `try_send`；数据面 crate 禁 tokio（编译期验证，见 I11） |
 | I3 | **运动门控每帧跑（~2ms）；检测由运动首帧事件驱动触发，非轮询** | 合成流 CI 断言：静止→运动→AlarmRaised ≤ 150ms |
 | I4 | **分析用子码流，录像/监看用主码流，链路物理隔离** | 两路 ffmpeg 进程独立；配置字段分离；预览挂≠报警挂 |
@@ -69,8 +71,8 @@ frontend/         React 18 + TS + Vite（产物 → static/）
 ════════════════════════════════════════════════════════════════════════
                         ▼  控制面 forwarder（唯一桥接 task）
 ═══════════ 控制面（Control Plane，tokio）═══════════════════════════════
-  forwarder: sync_channel → tokio broadcast（事件总线）
-  DbWriter(单写者, seq 分配) · Projector(投影 alarms/tracks)
+  forwarder: sync_channel → DbWriter(串行点对点) → fan-out 顺序广播
+  seq 分配（单写者内存）· Projector(投影 alarms/tracks)
   WS 推送 · notify(Webhook/邮件/Telegram) · cognition(LLM) · agent · api
   预览链路: fMP4/MSE（独立 ffmpeg，按需启停）
 ════════════════════════════════════════════════════════════════════════
@@ -102,9 +104,11 @@ pub struct LatestFrameSlot {
 // 读者(T2)：读 active → seq 为偶且读后复核一致 → 消费；否则重试
 ```
 
-- **双缓冲给读者一个完整帧周期的宽限**（写者翻转两次才会覆盖读者正在读的缓冲）：
-  运动检测直读 slot 内 Y 平面（零拷贝，~2ms），推理前拷贝到 scratch（~0.3ms）——都远小于
-  25fps 的 40ms 宽限，seq 复核保证极端竞争下重试正确。
+- **宽限期修正（v2.2）**：双缓冲在 25fps 下读者有 **~40ms**（写者要翻转两次、即跨一个
+  完整帧周期，才会覆盖读者正在读的缓冲）——不是 v2.1 写的"一个帧周期"两可表述。
+  运动检测直读 slot 内 Y 平面（零拷贝，~2ms）+ 推理前拷贝 scratch（~0.3ms）**合计 <3ms**，
+  巨大余量；若推理耗时 60ms **则必须走 scratch**（§3.2 已如此设计——slot 借用只活到
+  copy_nv12 返回），读后 seq 复核负责极端竞争下的正确性重试。
 - **诚实 I1**：物理拷贝仅推理前一次（NV12→scratch，350KB 进 L2，~0.3ms），0 编解码、
   0 格式转换。比嘴上的"绝对零拷贝"更快更稳——绝对零拷贝在借用检查下要用 unsafe 伪装，
   诚实方案才挑不出毛病。
@@ -115,7 +119,7 @@ pub struct LatestFrameSlot {
 
 ---
 
-## 3. 数据面流水线（单路三线程）
+## 3. 数据面流水线（单路核心三线程 + 证据线程）
 
 ### 3.1 T1 拉流线程
 
@@ -161,13 +165,14 @@ fn analysis_loop(stop: &AtomicBool, slot: &LatestFrameSlot, pool: &DetectorPool,
         let dets = pool.detect(&scratch);                      // 60ms CPU / 15ms GPU
         let (active, ended) = tracker.update(dets);
         for ev in rules.evaluate(&active, &ended) {            // 状态机（I8）
-            if ev.is_alarm() { evidence.encode_crop(&scratch, ev.box()); } // per-alarm
             match bridge.try_send(ev) {                        // I12 分级
                 Ok(()) => {}
                 Err(TrySendError::Full(e)) if e.grade() == Critical => bridge.spill(e),
                 Err(TrySendError::Full(_)) => bridge.count_dropped(),
             }
         }
+        // 证据编码 v2.2 移出热路径（ADR-021）：报警事件只带 box/scratch 代数，
+        // 由独立的低优先级证据线程从 EvidenceRing 取帧编码——热路径绝不付 JPEG 的钱
         bridge.metrics.publish(frame.gen(), boxes, dets.len()); // AtomicU64
     }
 }
@@ -176,10 +181,36 @@ fn analysis_loop(stop: &AtomicBool, slot: &LatestFrameSlot, pool: &DetectorPool,
 - **I3 的真正含义**：不是"每 N 秒轮询检测"，是**每帧 2ms 运动检测 + 运动首帧立即推理**。
   静止时只付解码+2ms；运动→报警端到端 < 100ms（§7 预算）。
   **参照**：ai-nvr"帧驱动连续检测比定时器延迟更低"（PROJECT_STATE.md）+ rebucca `_force_detect`。
+- **运动校准期（v2.2 补，ADR-023）**：EMA 背景模型前 30 帧在建基线（抄 frigate
+  `frigate_motion.py` 的 `frame_counter < 30`），此期间**运动框不可信**——分析循环跳过检测
+  触发（但仍更新背景）。摄像头重连后重新校准。校准期约 1.2s（30 帧/25fps），期间宁可漏报
+  不可误报：刚启动就报警的 NVR 是没人信的。
+- **推理并发上限（v2.2 补，ADR-024）**：每路 T2 在推理期间**不再消费新帧**（slot 里
+  latest-wins 自然丢帧）。这意味着单路运动期间的分析 FPS = 1000/(2+0.3+60) ≈ 16fps——
+  对 25fps 子码流足够（跟踪在 16fps 下 IoU 关联稳定），但这是**显式设计值**而非事故。
+  若未来需要分析并行于推理（解码与推理流水化），需双 slot——目前否决，复杂度不值。
 - **轮询 vs condvar**：无新帧时 1ms 轮询，25fps 下每秒多醒 ~25 次，成本可忽略；换来无 condvar
   的唤醒丢失/虚假唤醒边界问题。`gen` 保证最坏只晚 1ms。选简单。
-- **报警证据**：`encode_crop` 只编码检测框裁剪区（典型 <1ms），按报警次数发生——不在每帧
-  热路径（I1 的 per-alarm 例外）。全帧快照走预览链路已有的 H.264，不重复编码。
+
+### 3.2.1 证据链路（v2.2 新增，ADR-021）
+
+```
+T2 分析线程（热路径）             证据线程（每路一个，低优先级）
+  报警时只投递：                     收 (alarm_id, box, gen)：
+  (alarm_id, box, frame_gen)  ──▶     EvidenceRing[gen] 取该代 NV12 帧
+  try_send，微秒级                     ↓（取不到=已被覆盖，跳过并计数）
+                                      crop(box) → JPEG 编码（1-5ms，这里付得起）
+                                      → 写 evidence/{alarm_id}.jpg
+                                      → 事件 EvidenceReady{alarm_id, path}(Info)
+```
+
+- **EvidenceRing**：每路固定 N=8 个 NV12 帧引用的环形数组（T1 发布帧时顺手存一份
+  `Arc<Nv12Frame>` 引用——引用计数原子操作，零拷贝）。报警帧引用在报警后仍被持有时
+  不会被覆盖（Arc 语义），天然解决"编码时帧被写坏"。
+- **失败语义**：ring 里该代已被挤出（报警后 8 帧内没轮到证据线程）→ 跳过编码 + 计数，
+  报警本身照发——证据是增强，不是依赖。cognition 的 `wait_jpeg` 最多等 `evidence_timeout`
+  （2s），超时跳过该次洞察（§10）。
+- **线程预算**：+1 线程/路（证据线程平时 park 在 channel 上，零 CPU），计入 §3.4。
 
 ### 3.3 T3 录像线程（与分析物理隔离，I4）
 
@@ -189,8 +220,9 @@ fn analysis_loop(stop: &AtomicBool, slot: &LatestFrameSlot, pool: &DetectorPool,
 
 ### 3.4 线程预算
 
-8 路 = 24 个 mostly-blocked OS 线程（Linux 每线程 ~8KB 内核栈）+ 控制面 ~6 tokio worker。
-线程是这里的**最优并发原语**——阻塞 IO + CPU 密集 + borrow 生命周期，async 是错误工具。
+8 路 = 24 个 mostly-blocked OS 线程（T1/T2/T3）+ 8 个证据线程（park，零 CPU）+ 每引擎键
+1 个推理线程 ≈ 33，加控制面 ~6 tokio worker。Linux 每线程 ~8KB 内核栈，全部 mostly-blocked——
+线程是这里的**最优并发原语**，async 是错误工具。
 
 ---
 
@@ -198,16 +230,22 @@ fn analysis_loop(stop: &AtomicBool, slot: &LatestFrameSlot, pool: &DetectorPool,
 
 ```rust
 pub struct DetectorPool {
-    session: Arc<ort::Session>,        // 全进程 1 份模型（对比 Python 8 进程 8 份）
-    queue:   Mutex<Vec<InferReq>>,     // 攒批窗口
-    cv:      Condvar,                  // 数据面同步原语（非 async）
-    batch:   usize,                    // min(8, 摄像头数)
-    window:  Duration,                 // 40ms
+    sessions: Mutex<HashMap<EngineKey, Arc<ort::Session>>>,  // 按(algo_id,engine,device,conf,iou)键缓存
+    queue:    Mutex<Vec<InferReq>>,     // 攒批窗口
+    cv:       Condvar,                  // 数据面同步原语（非 async）
+    batch:    usize,                    // min(8, 摄像头数)
+    window:   Duration,                 // 40ms
 }
 // 专用推理线程：收请求 → 攒到 batch 或 40ms 窗口 → 单次 ort 前向（batch 维度）
 // 响应：每请求一个 AtomicState(Pending→Ready)，T2 park/自旋等待
 ```
 
+- **多模型修正（v2.2，ADR-025）**：v2.1 的"全进程 1 份模型"是错的——规则可引用不同算法
+  （人车用 A 模型、车牌用 B 模型）。改 rebucca 同款键缓存（`worker_pool.py` 的
+  `(algo_id, engine, model_file, conf, iou, size, task, device)` 键），同键请求才互相攒批，
+  不同键的请求各自攒批。同键场景下仍是"1 份模型 N 路共享"。
+- **线程预算修正（v2.2）**：一个 pool 只有一个推理线程，多键会串行化各键批——每**键**一个
+  推理线程（同键内才攒批），键数实际 ≤2（常见一个通用检测模型）。
 单路时直通（无攒批延迟）；8 路同时运动 batch=8，GPU 利用率拉满、CPU SIMD 摊薄。
 **参照**：rebucca `inference_pool.py` 共享推理的思想（其 JPEG 跨进程是败笔，Arc 共享是正解）。
 
@@ -225,46 +263,57 @@ pub enum Event {
     StreamUp{..}, StreamDown{..},
     TrackAppeared{..}, TrackDisappeared{..}, TrackEnteredZone{..}, TrackLeftZone{..},
     AlarmRaised{..}, AlarmCleared{..},
-    InsightGenerated{ alarm_id, insight },     // cognition 回填
+    EvidenceReady{ alarm_id, path },           // 证据线程产物（Info）
+    InsightGenerated{ alarm_id, insight },     // cognition 回填（Critical）
     RecordingSegment{..},
     AgentAction{..}, ConfigChanged{..},
 }
 impl Event { fn grade(&self) -> Grade; }   // Critical: Alarm/Insight；Info: Track/Stream/Recording；Debug: 其余
 ```
 
-### 5.2 单写者 DbWriter（修 v2 的 select bug）
+### 5.2 单写者 DbWriter + 顺序广播（v2.2 修 I12 正确性 bug）
 
 ```rust
-async fn db_writer(rx: Receiver<Event>, db: Db, seq: &AtomicU64) {
+// v2.1 曾让 Projector/WS/notify 各自订阅 broadcast —— 错：tokio broadcast 慢消费者
+// 会 Lagged 丢事件，派生表静默漂移，违反 I6/I12。v2.2 改为串行链：
+//   forwarder → DbWriter（唯一消费者，永不 Lagged）→ 写库成功后按 seq 顺序 fan-out
+async fn db_writer(rx: Receiver<Event>, db: Db) -> SeqAlloc {
     let mut buf = Vec::with_capacity(256);
     let mut tick = interval(Duration::from_millis(50));
+    let mut seq = SeqAlloc::load(&db).await;      // 启动恢复：max(seq)+1（ADR-026）
     loop {
         tokio::select! {
-            _ = tick.tick() => { flush(&mut buf, db, seq).await; }
+            _ = tick.tick() => { flush(&mut buf, &db, &mut seq, &fanout).await; }
             e = rx.recv() => match e {
                 Some(ev) => { buf.push(ev);
-                    if buf.len() >= 256 { flush(&mut buf, db, seq).await; } }
-                None => { flush(&mut buf, db, seq).await; break; }   // 关停 drain
+                    if buf.len() >= 256 { flush(&mut buf, &db, &mut seq, &fanout).await; } }
+                None => { flush(&mut buf, &db, &mut seq, &fanout).await; break; }   // 关停 drain
             }
         }
     }
 }
+// flush：单事务 INSERT events（分配 seq）→ 事务提交 → 按 seq 顺序 fan_out 给
+//        Projector / WS / notify / cognition。写库失败则不 fan-out（事件在下个
+//        50ms 窗口重试，Critical 级事件失败 3 次走 spill 重放）。
+// fan-out 消费者不许再丢：WS 推送失败只影响该连接，不回压链路。
 ```
 
 SQLite：`journal_mode=WAL; synchronous=NORMAL;`。50ms/256 条单事务批量 INSERT。
-**seq 由单写者内存分配**（I7 使其天然正确），checkpoint 持久化；events 表按月轮转
-（`events_YYYY_MM`，DbWriter 建表/维护 UNION ALL 视图；过期整表 DROP——SQLite 没有
-原生分区，月表轮转是它的 O(1) 删除等价物；PG 后端可换原生分区，接口不变）。
+**seq 由单写者内存分配**（I7 使其天然正确），启动时从 `max(events.seq)` 恢复（重启后
+monotonic 不回退，ADR-026）；events 表按月轮转（`events_YYYY_MM`，DbWriter 建表/维护
+UNION ALL 视图；过期整表 DROP——SQLite 没有原生分区，月表轮转是它的 O(1) 删除等价物；
+PG 后端可换原生分区，接口不变）。
 **参照教训**：rebucca `pipeline.py` 原注释"高频写库是 SQLite 写锁与页面卡顿的主要来源"。
 
 ### 5.3 Projector（投影器，v1 口号的落地）
 
 ```rust
 // 从 events 增量维护派生表；崩溃恢复 = 从 checkpoint 重放
-async fn run(mut rx: broadcast::Receiver<Event>, db: Db) {
+// v2.2：输入从 broadcast 改为 DbWriter 的顺序 fan-out（§5.2），投影永不缺事件
+async fn run(mut rx: OrderedFanout, db: Db) {
     let checkpoint = load_checkpoint(&db);                       // seq 位点
-    replay_from(&db, checkpoint.seq).await;                      // 追赶
-    while let Ok(ev) = rx.recv().await {
+    replay_from(&db, checkpoint.seq).await;                      // 追赶（读 events 表）
+    while let Some(ev) = rx.next().await {
         project(ev, &db).await;    // AlarmRaised→upsert alarms；Insight→回填 insight 列；
                                   // Track*→tracks 轨迹追加；RecordingSegment→recordings
         maybe_checkpoint(&db, ev.seq()).await;                   // 每 10min
@@ -273,6 +322,10 @@ async fn run(mut rx: broadcast::Receiver<Event>, db: Db) {
 ```
 
 **派生表永远可重建**——schema 演进 = 改投影器 + 重放。这是"1 万年"的底气。
+
+**僵尸报警清扫（v2.2 补，ADR-028）**：崩溃时活跃报警停在 alarms 表里没有 cleared_at。
+Projector 启动重放后，对 raised_at 超过 `max_alarm_ttl`（默认 10min）仍未 cleared 的行补发
+`AlarmCleared{reason: "stale_on_boot"}`——报警语义有界，不留永真报警。
 
 ### 5.4 背压与溢出（I12）
 
@@ -289,14 +342,16 @@ async fn run(mut rx: broadcast::Receiver<Event>, db: Db) {
   T_copy    NV12→scratch               ~0.3ms
   T_infer   YOLOv8n batch=1 直通       ~60ms CPU / ~15ms GPU
   T_rule    状态机+几何                 ~0.1ms
-  T_bus     try_send→broadcast         ~0.1ms
+  T_bus     try_send→DbWriter fan-out  ~0.1ms
   T_ws      WebSocket 推送             ~1-5ms（局域网）
   ─────────────────────────────────────────────
   合计：CPU ~64ms / GPU ~19ms   【目标 <100ms；CI 上限断言 150ms 含抖动余量】
+  （校准期 30 帧 ≈1.2s 内不报——宁可漏报不误报，见 ADR-023）
 
 监控→预览 = fMP4 分段(~1s) + WS        ~1.2s（MSE 浏览器 GPU 解码，服务器零解码成本）
 报警落库（非关键路径）= 攒批窗口        ≤50ms（不影响报警到达前端）
 cognition 洞察（非关键路径）= LLM API    1-3s（异步回填，报警先达，洞察后补）
+证据编码（非关键路径）= 证据线程         异步，报警事件先走（ADR-021）
 ```
 
 每项经 healthz 暴露实测值（AtomicU64 直读）。
@@ -353,11 +408,17 @@ pub struct Rule {
 ```
 
 - 规则 JSON 存 DB，热更新走 `ConfigChanged` 事件（Agent 改规则也走这条——审计天然完整）。
+- **热更新落地（v2.2 补，ADR-027）**：T2 的规则/布控快照是 `ArcSwap<RuleSet>`——控制面写
+  `ConfigChanged` 事件后直接 `ArcSwap::store(新快照)`，T2 下一帧 `load()` 拿新引用，旧引用
+  的状态机（滞留计时/冷却）**随旧快照一起被丢弃**，新快照从 Idle 重新开始。语义：改规则 =
+  重置该路规则状态——简单、无迁移代码；Agent/前端改规则的生效延迟 = 一帧（<40ms）。
 - 输出经状态机（I8）：`AlarmRaised` 只在 Idle→Active 跳变发；停留期内按 cooldown 重发可配置。
 - 几何核心（点在多边形/叉积越线/角度窗）抄 rebucca `biz_rules.py`——纯函数，单测直接移植其用例。
 - **v2.1 解耦（ADR-017）**：rebucca 的 `flow_type 1/2/3/4` 把"用哪个模型"和"要不要 LLM"
   揉在一个字段里——AIVX 拆开：几何条件在 Rule；模型选择在 Algorithm；LLM 复核是 Rule 上的
   一个 `Action::VerifyWithLlm` 或全局 cognition 策略。正交，不再组合爆炸。
+- **报警标识（v2.2 补）**：alarm_id = `rule_id + track_id + raised_at_mono` 组合——T2 生成，
+  InsightGenerated/AlarmCleared/证据文件都靠它关联，不需要额外查询。
 
 ---
 
@@ -368,15 +429,16 @@ vision_model→refine_model→回写）、rebucca `pipeline.py::_llm_verify_trac
 ai-nvr `multimodal-analyzer.ts`（每摄像头节流）、frigate `genai/plugins/`（provider 插件化）。
 
 ```rust
-// 控制面 task：订阅事件总线，不阻塞任何报警路径
-async fn cognition(bus: Bus, providers: Arc<dyn GenAiProvider>, store: EvidenceStore) {
-    while let Ok(AlarmRaised{ alarm }) = bus.subscribe().recv().await {
+// 控制面 task：消费 DbWriter 的顺序 fan-out，不阻塞任何报警路径
+async fn cognition(mut ev: OrderedFanout, providers: Arc<dyn GenAiProvider>, store: EvidenceStore) {
+    while let Some(ev) = ev.next().await {
+        let AlarmRaised{ alarm } = ev else { continue };
         if !cognition_enabled(&alarm.rule_id) { continue; }
         if cooldown.hit(&alarm) { continue; }            // per-rule 冷却，默认 6s（抄 rebucca）
-        let img = store.crop_jpeg(&alarm.id).await;      // T2 已按报警编码的 crop 证据
+        let img = store.wait_jpeg(&alarm.id).await;      // 证据线程产物（ADR-021），最多等 evidence_timeout
         let insight = providers.analyze(&img, prompt_ctx(&alarm.device_id)).await?;
         // Insight{ is_false_positive, threat_level, scene, title, summary }
-        bus.publish(InsightGenerated{ alarm_id: alarm.id, insight }).ok();  // Critical
+        ev.publish(InsightGenerated{ alarm_id: alarm.id, insight });  // Critical，走完整落库链
     }
 }
 ```
@@ -385,7 +447,8 @@ async fn cognition(bus: Bus, providers: Arc<dyn GenAiProvider>, store: EvidenceS
   **不撤回**，宁可多报不可漏报）。
 - provider 插件：openai 兼容（走你 AIGX 网关）/ ollama / gemini（抄 frigate genai plugins 目录结构）。
 - 每摄像头 `prompt_context` 覆盖（"此摄像头朝向后门"，抄 frigate-event-handler）。
-- LLM 延迟 1-3s 与报警路径解耦（§6 预算独立）。
+- LLM 延迟 1-3s 与报警路径解耦（§6 预算独立）；证据未就绪（evidence_timeout=2s 内
+  crop 没编出来）则跳过该次洞察——报警永远先于洞察存在。
 
 ---
 
@@ -492,10 +555,10 @@ ruoyi `sql/ry-cloud.sql`（协议字段教训——大表全字段是反例）�
 
 ```
 SIGTERM →
-  1. ControlFlags.stop = true（数据面三线程退出循环；T1 kill ffmpeg，丢半帧可接受）
-  2. forwarder drain：sync_channel 剩余事件全部进总线
-  3. DbWriter 收 None → 最后一次 flush（事务提交）→ 退出
-  4. Projector 写最终 checkpoint
+  1. ControlFlags.stop = true（数据面各线程退出循环；T1 kill ffmpeg，丢半帧可接受）
+  2. forwarder drain：sync_channel 剩余事件（含 spill 回灌）全部交给 DbWriter 后 drop 发送端
+  3. DbWriter 收 None → 最后一次 flush（事务提交 + fan-out 完毕）→ 退出
+  4. Projector 消费完 fan-out 尾部 → 写最终 checkpoint
   5. 预览 ffmpeg 终止（段收尾 500ms 上限）
   总预算 <2s；超时强杀并记录未落库计数
 ```
@@ -514,17 +577,20 @@ SIGTERM →
 
 | 不变量 | 手段 |
 |---|---|
-| I1 分配上限 | dhat/计数分配器包住单帧循环，断言 `allocs ≤ N`；报警帧的 per-alarm 证据单独断言 |
-| I3 延迟 | 合成 NV12 流全链路计时 <150ms（criterion + CI） |
+| I1 分配上限 | dhat/计数分配器包住单帧循环，断言 `allocs ≤ N`（报警帧同样——证据编码已在证据线程，ADR-021） |
+| I3 延迟 | 合成 NV12 流全链路计时 <150ms（criterion + CI；含校准期后的首运动帧） |
 | I5/I11 crate 边界 | `cargo tree -i tokio -p aivx-perception` 为空；aivx-events 仅 serde |
-| I12 背压 | 灌满 channel 单测：Critical 经 spill 100% 达 DbWriter |
+| I6/I12 事件不丢 | **顺序 fan-out 回归测试**：灌满下游后断言 Projector 收到全部 seq（无洞）；灌满 channel 后 Critical 经 spill 100% 达 DbWriter |
 | I8 去重 | 连续帧同目标单测：仅 1 条 AlarmRaised |
 | 帧撕裂 | 模糊测试：随机截断 ffmpeg 输出，断言 read_exact 失败被状态机接住 |
 | 断流 | 模拟 EOF/超时，断言状态机路径与 StreamDown/Up 事件序列 |
+| 校准期（ADR-023） | 重连后 30 帧内注入运动，断言无 AlarmRaised |
+| 热更新（ADR-027） | ArcSwap 替换规则集，断言下一帧生效 + 状态重置 |
+| 僵尸清扫（ADR-028） | 预置超 TTL 活跃报警行，重启 Projector，断言补发 AlarmCleared |
 
 ---
 
-## 20. ADR 登记（v2 的 008~015 保留，v2.1 新增 016~020）
+## 20. ADR 登记（v2 的 008~015 + v2.1 的 016~020 保留，v2.2 新增 021~028）
 
 | ADR | 决策 | 推翻/修正 | 参照 |
 |---|---|---|---|
@@ -542,6 +608,14 @@ SIGTERM →
 | **018** | cognition 在控制面异步，洞察回填不撤回报警 | v2 章节丢失 | 宁多报不漏报 |
 | **019** | 数据面用 std::process（非 tokio::process） | **v2 技术错误** | AsyncChildStdout 无法阻塞 read_exact |
 | **020** | 平面桥用 std::sync_channel + spill（非 tokio mpsc），perception 禁 tokio | **v2 技术错误** | I11 编译期强制 |
+| **021** | 证据编码移出 T2 热路径：EvidenceRing（每路最近 N 帧 NV12 环形引用）+ 低优先级证据线程，T2 只投 `(alarm_id, box, gen)` | **v2.1 技术错误**：JPEG 编码 1-5ms 在 16fps 预算里是 5-16% | I1 的 per-alarm 例外也要出热路径 |
+| **022** | 事件链从 broadcast 改为 DbWriter 顺序 fan-out | **v2.1 正确性 bug**：broadcast Lagged 丢事件 → 派生表静默漂移 | I6/I12 要求投影永不缺事件 |
+| **023** | 运动校准期（重连后 30 帧不触发检测） | v2.1 缺失 | frigate `frame_counter < 30`；宁漏报不误报 |
+| **024** | 推理期间 T2 不消费新帧（分析 FPS ≈16 为显式设计值） | v2.1 隐含未声明 | latest-wins 自然丢帧；双 slot 否决 |
+| **025** | DetectorPool 按引擎键缓存模型 + 每键一推理线程 | **v2.1 假设错误**："全进程 1 份模型"否定多算法规则 | rebucca worker_pool.py 键设计 |
+| **026** | seq 启动恢复：`max(events.seq)+1`，重启不回退 | v2.1 单写者内存 seq 无崩溃恢复 | 事件溯源的持久化缺口 |
+| **027** | 规则热更新 = `ArcSwap<RuleSet>` + 状态重置（无迁移代码） | v2.1 的"热更新走 ConfigChanged"无落地机制 | ArcSwap 无锁读；改规则=重置状态 |
+| **028** | 僵尸报警清扫：Projector 启动时对超 TTL 未 cleared 的行补 AlarmCleared | v2.1 缺失：崩溃留下永真报警 | 报警语义有界 |
 
 ---
 
@@ -559,12 +633,20 @@ SIGTERM →
 
 ---
 
-## 22. 反例清单（v1 的 1-7 + v2 的 8-12 保留，v2.1 追加）
+## 22. 反例清单（v1 的 1-7 + v2 的 8-12 + v2.1 的 13-16 保留，v2.2 追加）
 
-13. **v2 自己的数据面 tokio::process**——AsyncChildStdout 与阻塞 read_exact 矛盾，ADR-019 修正。
-14. **v2 的 DbWriter select 双 recv 分支**——编译不过的模式，§5.2 重写。
-15. **v2 的"SQLite 分区"**——SQLite 没有原生分区，月表轮转 + 单写者内存 seq 才成立（ADR-014/020）。
-16. **v2 重写丢了 6 个子系统**——蓝图不完整就声称"挑不出毛病"本身就是毛病；v2.1 §10-§16 补回。
+17. **v2.1 的证据编码在 T2 热路径里**——`encode_crop` 1-5ms 吃掉 16fps 预算的 5-16%，
+    违反自己写的 I1 精神。ADR-021 移到证据线程。
+18. **v2.1 的事件链用 broadcast**——慢消费者 Lagged 丢事件，派生表静默漂移，整个
+    事件溯源的正确性被一个错误的原语毁掉。ADR-022 改顺序 fan-out。**教训：溯源架构里
+    任何"可能丢"的环节都是体系性错误，不是调参问题。**
+19. **v2.1 的"全进程 1 份模型"**——多算法规则（人车 A 模型+车牌 B 模型）下不成立。
+    ADR-025 按引擎键缓存。
+20. **v2.1 的热更新只有口号**——"走 ConfigChanged 事件"但 T2 怎么拿到新规则没写。
+    ADR-027 用 ArcSwap 落地。
+21. **无校准期**——摄像头刚连上就跑检测，EMA 背景没建好必然误报。ADR-023。
+22. **崩溃恢复语义缺口**——seq 内存分配无恢复（ADR-026）、活跃报警变永真（ADR-028）。
+    崩溃路径不设计，重启就是行为未定义。
 
 ---
 
@@ -583,13 +665,14 @@ SIGTERM →
 
 ---
 
-## 24. 自检结论（v2.1）
+## 24. 自检结论（v2.2）
 
-- **完整性**：v2 丢失的 cognition/agent/DeviceAdapter/数据模型/可观测/安全/非目标/路线图全部补回；每个子系统都有参照文件与 Rust 落地。
-- **一致性**：12 条不变量与 §19 的强制手段一一对应；I5/I11 从文档约定升级为 crate 编译边界。
-- **诚实性**：承认推理前一次拷贝（ADR-010）、承认报警证据编码（ADR-016）、承认 SQLite 无分区（ADR-014）、记录自己的两次技术错误（ADR-019/020）——挑不出毛病的前提是先把自己的毛病全挑出来。
-- **可验证**：每个数字有公式（§6）、有上限断言（§19）、有暴露端点（§14）。
-- **可演进**：派生表永远可重建（§5.3）、非目标何时重启有明确条件（§16）、每次推翻有 ADR（§20）。
+- **完整性**：v2 丢失的 cognition/agent/DeviceAdapter/数据模型/可观测/安全/非目标/路线图全部补回；v2.2 补齐校准期/崩溃恢复/热更新落地/僵尸清扫/证据线程。
+- **一致性**：12 条不变量与 §19 的强制手段一一对应；I5/I11 是 crate 编译边界；**I6/I12 经 ADR-022 从"文档声明"修复为架构保证**（事件链上不存在可丢环节）。
+- **诚实性**：承认推理前一次拷贝（ADR-010）、承认证据编码出热路径（ADR-021）、承认 SQLite 无分区（ADR-014）、承认单模型假设错误（ADR-025）、记录四轮自检的全部技术错误（ADR-019/020/021/022）——挑不出毛病的前提是先把自己的毛病全挑出来。
+- **可验证**：每个数字有公式（§6）、有上限断言（§19）、有暴露端点（§14）；崩溃路径有定义行为（ADR-023/026/028）。
+- **可演进**：派生表永远可重建（§5.3）、非目标何时重启有明确条件（§16）、28 条 ADR 全程留痕（§20）。
 
 > **P0 落地顺序**（§23）：先写测试后写实现——dhat 分配断言、cargo tree 边界断言、
-> 合成流延迟断言三件先行，再填实现。蓝本到此定稿，开始 P0。
+> 合成流延迟断言、**顺序 fan-out 无丢失断言（ADR-022 的回归测试）**四件先行，再填实现。
+> 蓝本到此定稿，开始 P0。
