@@ -68,9 +68,11 @@ impl LatestFrameSlot {
     /// P0 用整帧填充验证协议。
     pub fn write_val(&mut self, val: u8) -> u64 {
         let idx = 1 - self.active.load(Ordering::Acquire);
-        let seq = &self.seq[idx];
-        let cur = seq.fetch_add(1, Ordering::AcqRel); // 偶→奇：写入中
-        debug_assert!(!cur.is_multiple_of(2), "写入中途重入——协议违反");
+        let cur = self.seq[idx].fetch_add(1, Ordering::AcqRel); // 偶→奇：写入中
+        debug_assert!(
+            cur.is_multiple_of(2),
+            "写入中途重入——协议违反(上次写入未 commit)"
+        );
         self.bufs[idx].iter_mut().for_each(|b| *b = val);
         self.commit_locked(idx)
     }

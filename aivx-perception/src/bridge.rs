@@ -84,14 +84,18 @@ impl PlaneBridge {
                     .spilled_critical
                     .fetch_add(1, Ordering::Relaxed);
                 if let Some(dir) = &self.spill_dir {
-                    // serde_json 仅 dev/此处用——events crate 自带 JSON 能力更干净：
-                    // 走 aivx_events 的 serde 手写行格式，避免生产依赖 serde_json。
                     if let Ok(json) = event_to_json(&ev) {
                         let _ = std::fs::create_dir_all(dir);
+                        // 文件名含纳秒——但极端并发下 mono_ns() 可能同值
+                        //（Windows 系统钟分辨率 ~15ms/或两次调用同 tick）。
+                        // 加一个进程内原子计数保证唯一，避免覆盖丢文件。
+                        static SPILL_SEQ: AtomicU64 = AtomicU64::new(0);
+                        let n = SPILL_SEQ.fetch_add(1, Ordering::Relaxed);
                         let path = dir.join(format!(
-                            "spill-{}-{}.json",
+                            "spill-{}-{}-{}.json",
                             std::process::id(),
-                            crate::mono_ns()
+                            crate::mono_ns(),
+                            n
                         ));
                         let _ = std::fs::write(path, json.as_bytes());
                     }
@@ -215,8 +219,18 @@ mod tests {
         for _ in 0..4 {
             rx.try_recv().expect("前 4 条应在队列");
         }
-        // 回灌 spill
-        let replayed = replay_spills(&dir, &bridge.tx_for_test());
+        // 回灌 spill（容量 4：回灌 4 条满后 break，剩余下轮——这是设计行为）
+        let first = replay_spills(&dir, &bridge.tx_for_test());
+        // 排空后继续回灌，直到全部 10 条回完
+        let mut replayed = first;
+        while replayed < 10 {
+            while rx.try_recv().is_ok() {}
+            let n = replay_spills(&dir, &bridge.tx_for_test());
+            if n == 0 {
+                break;
+            }
+            replayed += n;
+        }
         assert_eq!(replayed, 10, "10 条 Critical 应全部回灌");
         // 全部可达
         let mut got = 0;
