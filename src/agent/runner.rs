@@ -10,7 +10,6 @@ use crate::agent::llm::{self, ChatMessage, ChatProvider, LlmMessage};
 use crate::agent::session::AgentRole;
 use crate::agent::tools::{self, RiskLevel};
 use crate::agent::ActionContext;
-use serde_json::Value;
 
 /// 请求序号（审批 request_id 唯一性）。
 static REQ_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -221,7 +220,11 @@ mod tests {
         // 用自定义 provider 直接请求写工具
         struct WriteProvider;
         impl ChatProvider for WriteProvider {
-            fn chat(&self, _: &[ChatMessage], _: Option<&[Value]>) -> Result<LlmMessage, String> {
+            fn chat(
+                &self,
+                _: &[ChatMessage],
+                _: Option<&[serde_json::Value]>,
+            ) -> Result<LlmMessage, String> {
                 Ok(LlmMessage {
                     content: String::new(),
                     tool_calls: vec![llm::ToolCall {

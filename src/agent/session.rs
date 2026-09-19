@@ -6,9 +6,10 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 会话角色。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentRole {
     /// 观察员：只读工具，写工具一律拒绝。
+    #[default]
     Observer,
     /// 运维员：读写工具均可（高危仍需审批）。
     Operator,
@@ -17,12 +18,6 @@ pub enum AgentRole {
 impl AgentRole {
     pub fn allows_write(&self) -> bool {
         matches!(self, AgentRole::Operator)
-    }
-}
-
-impl Default for AgentRole {
-    fn default() -> Self {
-        AgentRole::Observer
     }
 }
 
