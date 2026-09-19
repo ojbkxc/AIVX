@@ -31,12 +31,12 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use aivx_events::{DeviceId, Event};
+use aivx_net::{AccessType, Capabilities, Device};
 use aivx_perception::analyze::MotionStubAnalyzer;
 use aivx_perception::bridge::PlaneBridge;
 use aivx_perception::frame::LatestFrameSlot;
 use aivx_perception::record::{record_loop, RecordCfg};
 use aivx_perception::stream::DecodeCfg;
-use aivx_net::{AccessType, Capabilities, Device};
 use serde::Deserialize;
 
 /// ── YAML 模型（Frigate 字段习惯）──────────────────────────────

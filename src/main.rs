@@ -23,6 +23,7 @@ use aivx_net::Device;
 use aivx_perception::stream;
 use std::sync::atomic::Ordering;
 
+use aivx::cameras::CameraManager;
 use aivx::memory::{MemEventStore, MemProjections};
 use aivx::pipeline::{forwarder, DbWriter, Projector};
 
@@ -62,7 +63,7 @@ struct ApiState {
     store: Arc<MemEventStore>,
     projections: Arc<MemProjections>,
     db: Arc<tokio::sync::Mutex<DbWriter>>,
-    cameras: Arc<cameras::CameraManager>,
+    cameras: Arc<CameraManager>,
 }
 
 async fn list_devices(State(s): State<ApiState>) -> Json<Vec<Device>> {
@@ -131,7 +132,7 @@ async fn main() {
     // CameraManager：YAML 设备清单 → 每路 T1/T2/T3 线程束（P8a 真实事件上游）
     let cam_config = cfg.data_dir.join("config.yml");
     let record_dir = cfg.data_dir.join("record");
-    let cameras = Arc::new(cameras::CameraManager::load_yaml(&cam_config, record_dir)?);
+    let cameras = Arc::new(CameraManager::load_yaml(&cam_config, record_dir)?);
     let cam_rx = cameras.event_rx();
 
     let state = ApiState {
