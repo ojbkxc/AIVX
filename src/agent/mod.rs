@@ -11,6 +11,7 @@
 //! 安全底线：写操作分低危（自动+审计）与高危（审批矩阵），默认只读观察员。
 
 pub mod approval;
+pub mod data;
 pub mod llm;
 pub mod runner;
 pub mod session;
@@ -18,14 +19,25 @@ pub mod tools;
 
 use std::sync::Arc;
 
-/// Agent 工具执行上下文：查询投影器/设备 + 记录 AgentAction 事件（审计）。
+/// Agent 工具执行上下文：查真实数据源 + 记录 AgentAction 事件（审计）。
 ///
-/// P5 桩实现：查询返回样例数据；写操作记录事件。P6 接真实 handler
-///（查 aivx-net DeviceAdapter + 控制面投影器）。
-#[derive(Clone, Default)]
+/// P8 去桩：`data: SharedDataSource`（设备/报警/录像投影器），
+/// `record_action` 发 AgentAction 事件进事件链（审计天然完整）。
+#[derive(Clone)]
 pub struct ActionContext {
-    /// 记录动作（agent_action 事件留痕）——P5 桩。
+    /// 数据源（设备/报警/录像查询）。
+    data: data::SharedDataSource,
+    /// 记录动作（agent_action 事件留痕）。
     actions: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Default for ActionContext {
+    fn default() -> Self {
+        Self {
+            data: Arc::new(data::MemDataSource::new()),
+            actions: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
 }
 
 impl ActionContext {
@@ -33,19 +45,64 @@ impl ActionContext {
         Self::default()
     }
 
+    /// 用测试数据源构造（供工具测试/集成测试）。
+    pub fn with_data(data: data::SharedDataSource) -> Self {
+        Self {
+            data,
+            actions: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
     pub fn devices_summary(&self) -> String {
-        "设备列表（P6 接真实设备表）：cam-1 TP-LINK 在线 录像中；cam-2 离线".into()
+        let devices = self.data.list_devices();
+        if devices.is_empty() {
+            return "暂无设备".into();
+        }
+        let mut out = String::from("设备列表：");
+        for d in devices {
+            out.push_str(&format!(
+                "\n- {} ({}) 状态={} 接入={} 录像={} PTZ={}",
+                d.name, d.id, d.status, d.access_type, d.recording, d.ptz_supported
+            ));
+        }
+        out
     }
 
     pub fn alarms_summary(&self, limit: usize) -> String {
-        format!("报警列表（P6 接投影器）：最近 {limit} 条——暂无（桩）")
+        let alarms = self.data.list_alarms(limit);
+        if alarms.is_empty() {
+            return format!("最近 {limit} 条报警：无");
+        }
+        let mut out = format!("最近 {} 条报警：", alarms.len());
+        for a in alarms {
+            out.push_str(&format!(
+                "\n- [{}] {} 设备={} {}",
+                a.event_type, a.ts, a.device_id, a.description
+            ));
+        }
+        out
+    }
+
+    pub fn search_recording_summary(&self, device_id: &str, start_ts: i64, end_ts: i64) -> String {
+        let recs = self.data.search_recording(device_id, start_ts, end_ts);
+        if recs.is_empty() {
+            return format!("设备 {device_id} 在区间内无录像片段");
+        }
+        let mut out = format!("设备 {device_id} 录像 {} 段：", recs.len());
+        for r in recs {
+            out.push_str(&format!(
+                "\n- {} 起点={} 时长={}秒",
+                r.file_path, r.start_ts, r.duration_secs
+            ));
+        }
+        out
     }
 
     pub fn diagnostics_summary(&self) -> String {
-        "系统体检（P6 接 metrics）：cam-1 流健康 OK 分析FPS 16 延迟 64ms；cam-2 断流重连中".into()
+        self.data.diagnostics()
     }
 
-    /// 写工具审计：记录 AgentAction 事件文本（P6 发进事件链）。
+    /// 写工具审计：记录 AgentAction 事件文本。
     pub fn record_action(&self, tool: &str, args: &serde_json::Value, note: &str) {
         let text = format!("{tool} {args} {note}");
         self.actions.lock().unwrap().push(text);

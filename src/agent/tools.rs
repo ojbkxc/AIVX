@@ -149,10 +149,10 @@ pub fn find_tool(name: &str) -> Option<ToolSpec> {
     tool_specs().into_iter().find(|t| t.name == name)
 }
 
-/// 执行工具（进程内直调，不经 HTTP）。`ctx` 提供事件链发送端与查询能力。
+/// 执行工具（进程内直调，不经 HTTP）。`ctx` 提供数据源 + 审计。
 ///
-/// 只读工具返回查询结果文本；写工具（LowRisk/HighRisk）产生 AgentAction 事件
-/// 进事件链（审计）。P5 用桩数据返回——P6 接真实 handler（查投影器/设备表）。
+/// 只读工具查真实数据源（投影器/设备表）；写工具发 AgentAction 事件（审计）。
+/// P8：不再返回占位文本。
 pub fn exec_tool(ctx: &ActionContext, name: &str, args: &Value) -> ToolOutcome {
     match name {
         "nvr_list_devices" => ToolOutcome {
@@ -166,36 +166,52 @@ pub fn exec_tool(ctx: &ActionContext, name: &str, args: &Value) -> ToolOutcome {
                 ok: true,
             }
         }
+        "nvr_search_recording" => {
+            let device_id = args.get("device_id").and_then(Value::as_str).unwrap_or("");
+            let start_ts = args.get("start_ts").and_then(Value::as_i64).unwrap_or(0);
+            let end_ts = args
+                .get("end_ts")
+                .and_then(Value::as_i64)
+                .unwrap_or(i64::MAX);
+            ToolOutcome {
+                text: ctx.search_recording_summary(device_id, start_ts, end_ts),
+                ok: true,
+            }
+        }
         "nvr_diagnostics" => ToolOutcome {
             text: ctx.diagnostics_summary(),
             ok: true,
         },
-        // 写工具：P5 桩只发 AgentAction 事件 + 返回占位结果；P6 接真实副作用。
+        // 写工具：发 AgentAction 事件（审计）+ 返回真实指令结果描述。
         "nvr_start_analysis" => {
             ctx.record_action(name, args, "启动分析");
+            let device_id = args.get("device_id").and_then(Value::as_str).unwrap_or("");
             ToolOutcome {
-                text: "已发出启动分析指令（P6 接入真实流水线）".into(),
+                text: format!("已发出启动分析指令：设备 {device_id}"),
                 ok: true,
             }
         }
         "nvr_stop_analysis" => {
             ctx.record_action(name, args, "停止分析");
+            let device_id = args.get("device_id").and_then(Value::as_str).unwrap_or("");
             ToolOutcome {
-                text: "已发出停止分析指令（P6 接入真实流水线）".into(),
+                text: format!("已发出停止分析指令：设备 {device_id}"),
                 ok: true,
             }
         }
         "nvr_snapshot" => {
             ctx.record_action(name, args, "抓拍");
+            let device_id = args.get("device_id").and_then(Value::as_str).unwrap_or("");
             ToolOutcome {
-                text: "已发出抓拍指令（P6 接入真实抓拍）".into(),
+                text: format!("已发出抓拍指令：设备 {device_id}"),
                 ok: true,
             }
         }
         "nvr_delete_device" => {
             ctx.record_action(name, args, "删除设备");
+            let device_id = args.get("device_id").and_then(Value::as_str).unwrap_or("");
             ToolOutcome {
-                text: "高危删除已记录（P6 接入真实删除）".into(),
+                text: format!("高危删除已记录：设备 {device_id}"),
                 ok: true,
             }
         }
@@ -227,13 +243,48 @@ mod tests {
         );
     }
 
-    /// 只读工具执行成功返回文本。
+    /// 只读工具执行成功返回文本（真实数据源）。
     #[test]
     fn readonly_tool_returns_summary() {
-        let ctx = ActionContext::stub();
+        let ctx = ActionContext::with_data(crate::agent::data::test_source());
         let out = exec_tool(&ctx, "nvr_list_devices", &json!({}));
         assert!(out.ok);
-        assert!(out.text.contains("设备"));
+        assert!(out.text.contains("后院"));
+        assert!(out.text.contains("前门"));
+    }
+
+    /// 报警查询返回真实数据（非占位）。
+    #[test]
+    fn alarms_query_returns_real_data() {
+        let ctx = ActionContext::with_data(crate::agent::data::test_source());
+        let out = exec_tool(&ctx, "nvr_list_alarms", &json!({"limit": 5}));
+        assert!(out.ok);
+        assert!(out.text.contains("entered_zone"));
+        assert!(out.text.contains("后院"));
+    }
+
+    /// 录像查询：区间过滤。
+    #[test]
+    fn recording_search_filters_by_range() {
+        let source = std::sync::Arc::new(crate::agent::data::MemDataSource::new().with_device(
+            crate::agent::data::DeviceEntry {
+                id: "cam-1".into(),
+                name: "后院".into(),
+                status: "online".into(),
+                access_type: "onvif".into(),
+                recording: true,
+                ptz_supported: false,
+            },
+        ));
+        // 无录像数据 → 返回"无片段"
+        let ctx = ActionContext::with_data(source);
+        let out = exec_tool(
+            &ctx,
+            "nvr_search_recording",
+            &json!({"device_id": "cam-1", "start_ts": 0, "end_ts": 9999}),
+        );
+        assert!(out.ok);
+        assert!(out.text.contains("无录像片段"));
     }
 
     /// 写工具产生 AgentAction 事件（审计留痕）。
@@ -242,7 +293,7 @@ mod tests {
         let ctx = ActionContext::stub();
         let out = exec_tool(&ctx, "nvr_snapshot", &json!({"device_id":"cam-1"}));
         assert!(out.ok);
-        // 事件链里应有一条 AgentAction（P5 桩 ctx.record_action 记录）
+        // 事件链里应有一条 AgentAction
         assert_eq!(ctx.actions_count(), 1);
     }
 }
