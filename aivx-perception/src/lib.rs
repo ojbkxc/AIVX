@@ -10,9 +10,11 @@
 //! - [`motion::EmaMotion`] —— EMA 运动门控骨架（P1 填完整实现）
 //! - 分配断言测试（I1）：单帧热路径 0 堆分配
 
+pub mod analyze;
 pub mod bridge;
 pub mod frame;
 pub mod motion;
+pub mod stream;
 
 /// 单调钟纳秒（数据面唯一时钟，DESIGN.md §18 混合时钟）。
 /// 用不起 std::time::Instant 的跨线程传递，直接拿绝对纳秒。

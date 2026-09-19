@@ -9,7 +9,7 @@
 //! 恢复 task 在 channel 排空后回灌。Info/Debug 丢弃 + 计数。
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 
@@ -34,6 +34,8 @@ pub struct CameraMetrics {
     pub motion_ns_total: AtomicU64,
     /// 推理累计耗时 ns。
     pub infer_ns_total: AtomicU64,
+    /// 流状态机（stream::state 常量；healthz 直读）。
+    pub stream_state: AtomicU8,
 }
 
 /// 控制位（控制面写意图，数据面轮询）。
@@ -119,6 +121,11 @@ impl PlaneBridge {
     /// 仅测试：spill 回灌需要发送端。
     pub fn tx_for_test(&self) -> &SyncSender<Event> {
         &self.tx
+    }
+
+    /// 流状态机写入（T1 调用；healthz 直读 metrics.stream_state）。
+    pub fn set_stream_state(&self, s: u8) {
+        self.metrics.stream_state.store(s, Ordering::Release);
     }
 }
 

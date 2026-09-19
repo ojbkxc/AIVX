@@ -62,19 +62,38 @@ impl LatestFrameSlot {
         self.frame_size
     }
 
-    /// 写者：整值写一帧（P0 简化接口；P1 的 decode_loop 直接 write_exact 进 buf）。
-    ///
-    /// P1 将暴露 `begin_write()/commit()` 两段式给 `read_exact` 零拷贝直写；
-    /// P0 用整帧填充验证协议。
+    /// 写者：整值写一帧（测试/校准用便捷接口；生产 T1 走 begin_write/commit_write
+    /// 两段式让 ffmpeg `read_exact` 直写缓冲——见 stream.rs）。
     pub fn write_val(&mut self, val: u8) -> u64 {
+        let (idx, buf) = self.begin_write();
+        buf.iter_mut().for_each(|b| *b = val);
+        self.commit_write(idx)
+    }
+
+    /// 写者两段式（一）：锁非活跃缓冲（seq 偶→奇）。
+    ///
+    /// 返回 (缓冲下标, 可写切片)——调用方把 IO 直读进这里，零拷贝。
+    /// 半途失败必须 [`rollback_write`]（seq 回偶），否则下次 begin_write 会断言。
+    pub fn begin_write(&mut self) -> (usize, &mut [u8]) {
         let idx = 1 - self.active.load(Ordering::Acquire);
-        let cur = self.seq[idx].fetch_add(1, Ordering::AcqRel); // 偶→奇：写入中
+        let cur = self.seq[idx].fetch_add(1, Ordering::AcqRel); // 偶→奇
         debug_assert!(
             cur.is_multiple_of(2),
-            "写入中途重入——协议违反(上次写入未 commit)"
+            "写入中途重入——协议违反(上次写入未 commit/rollback)"
         );
-        self.bufs[idx].iter_mut().for_each(|b| *b = val);
+        let buf = &mut self.bufs[idx];
+        (idx, &mut buf[..])
+    }
+
+    /// 写者两段式（二）：发布（seq 奇→偶 + active 翻转 + gen 递增）。
+    pub fn commit_write(&mut self, idx: usize) -> u64 {
         self.commit_locked(idx)
+    }
+
+    /// 写者两段式（失败路径）：回滚未完成的写入（seq 奇→偶，帧不发布）。
+    pub fn rollback_write(&mut self, idx: usize) {
+        let cur = self.seq[idx].fetch_add(1, Ordering::AcqRel);
+        debug_assert!(!cur.is_multiple_of(2), "rollback 未持锁的缓冲——协议违反");
     }
 
     /// 写者：发布缓冲为新帧（写完数据后调用；seq 奇→偶发布，再翻 active）。
