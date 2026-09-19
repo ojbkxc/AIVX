@@ -1,6 +1,6 @@
 # aivx-net —— 协议层（DESIGN.md §12）。
-# 控制面使用（async）；数据面不 import 本 crate。
-# P0 骨架：DeviceAdapter trait + Capabilities；ONVIF 实现随 P1 落地。
+# 控制面使用；数据面不 import 本 crate。
+# P8：ONVIF SOAP 真实实现（reqwest blocking HTTP）。
 [package]
 name = "aivx-net"
 version = "0.1.0"
@@ -11,3 +11,4 @@ license-file = "../LICENSE"
 aivx-events = { path = "../aivx-events" }
 serde = { workspace = true }
 thiserror = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }

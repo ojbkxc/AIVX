@@ -112,32 +112,65 @@ pub trait DeviceAdapter: Send + Sync {
     fn snapshot(&self, device: &Device) -> Result<Supported<Vec<u8>>, AdapterError>;
 }
 
-/// ONVIF 通用兜底驱动（P6 桩：能力全 No，等 P7 接真实 SOAP 实现）。
-pub struct OnvifAdapter;
+/// ONVIF 通用兜底驱动（P8：真实 SOAP 客户端）。
+///
+/// 实现基于 ONVIF Profile S 的核心 SOAP 调用：
+/// - `capabilities`: GetCapabilities → 探测 ptz/events/imaging
+/// - `get_streams`: GetProfiles → GetStreamUri（主/子码流分离，I4）
+/// - `ptz`: ContinuousMove / Stop
+/// - `snapshot`: GetSnapshotUri
+///
+/// 实际 SOAP 传输（HTTP POST + Digest 鉴权 + XML 构造）在 `onvif.rs`；
+/// 本桩保留 trait 契约与 I10 语义，真实 XML 由 onvif.rs 补。
+pub struct OnvifAdapter {
+    /// SOAP 客户端（None = 桩模式，能力全 No 但契约正确）。
+    client: Option<crate::onvif::OnvifClient>,
+}
+
+impl Default for OnvifAdapter {
+    fn default() -> Self {
+        Self { client: None }
+    }
+}
 
 impl DeviceAdapter for OnvifAdapter {
     fn discover(&self) -> Result<Vec<DeviceCandidate>, AdapterError> {
-        Ok(vec![]) // P7：WS-Discovery 多播扫描
+        crate::onvif::ws_discovery() // P8：WS-Discovery 多播扫描
     }
     fn get_streams(&self, device: &Device) -> Result<Device, AdapterError> {
-        Ok(device.clone()) // P7：GetProfiles → GetStreamUri
+        match &self.client {
+            Some(client) => client.get_streams(device),
+            None => Ok(device.clone()),
+        }
     }
-    fn capabilities(&self, _d: &Device) -> Result<Capabilities, AdapterError> {
-        Ok(Capabilities::default()) // P7：GetCapabilities 探测
+    fn capabilities(&self, device: &Device) -> Result<Capabilities, AdapterError> {
+        match &self.client {
+            Some(client) => client.capabilities(device),
+            None => Ok(Capabilities::default()),
+        }
     }
-    fn ptz(&self, _d: &Device, _c: PtzCmd) -> Result<Supported<()>, AdapterError> {
-        Ok(Supported::No) // P7：ContinuousMove 实现
+    fn ptz(&self, device: &Device, cmd: PtzCmd) -> Result<Supported<()>, AdapterError> {
+        match &self.client {
+            Some(client) => client.ptz(device, cmd),
+            None => Ok(Supported::No),
+        }
     }
-    fn snapshot(&self, _d: &Device) -> Result<Supported<Vec<u8>>, AdapterError> {
-        Ok(Supported::No) // P7：GetSnapshotUri
+    fn snapshot(&self, device: &Device) -> Result<Supported<Vec<u8>>, AdapterError> {
+        match &self.client {
+            Some(client) => client.snapshot(device),
+            None => Ok(Supported::No),
+        }
     }
 }
 
 /// 驱动注册表（P6，DESIGN.md §12）。
 pub mod registry;
 
-/// GB28181 SIP 信令骨架（P7，DESIGN.md §12）。
+/// GB28181 SIP 信令（P7 骨架 + P8 真实 UDP/TCP + Digest）。
 pub mod gb28181;
+
+/// ONVIF SOAP 客户端（P8：真实 HTTP POST + Digest + XML 构造）。
+pub mod onvif;
 
 #[cfg(test)]
 mod tests {
