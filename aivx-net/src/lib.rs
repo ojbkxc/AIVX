@@ -136,6 +136,9 @@ impl DeviceAdapter for OnvifAdapter {
 /// 驱动注册表（P6，DESIGN.md §12）。
 pub mod registry;
 
+/// GB28181 SIP 信令骨架（P7，DESIGN.md §12）。
+pub mod gb28181;
+
 #[cfg(test)]
 mod tests {
     use super::*;
