@@ -219,25 +219,22 @@ mod tests {
         for _ in 0..4 {
             rx.try_recv().expect("前 4 条应在队列");
         }
-        // 回灌 spill（容量 4：回灌 4 条满后 break，剩余下轮——这是设计行为）
-        let first = replay_spills(&dir, &bridge.tx_for_test());
-        // 排空后继续回灌，直到全部 10 条回完
-        let mut replayed = first;
-        while replayed < 10 {
-            while rx.try_recv().is_ok() {}
+        // 回灌 spill + 逐条排空（容量 4 的 channel 装不下 10 条——回灌→收走→
+        // 再回灌，直到 spill 目录清空）。收到的 Critical 立即计读。
+        let mut got = 0usize;
+        let mut replayed = 0usize;
+        loop {
             let n = replay_spills(&dir, &bridge.tx_for_test());
-            if n == 0 {
-                break;
-            }
             replayed += n;
+            while let Ok(_) = rx.try_recv() {
+                got += 1;
+            }
+            if n == 0 {
+                break; // spill 目录已空
+            }
         }
-        assert_eq!(replayed, 10, "10 条 Critical 应全部回灌");
-        // 全部可达
-        let mut got = 0;
-        while rx.try_recv().is_ok() {
-            got += 1;
-        }
-        assert_eq!(got, 10, "Critical 100% 到达");
+        assert_eq!(replayed, 10, "10 条 Critical 应全部回灌，实际 {replayed}");
+        assert_eq!(got, 10, "Critical 100% 到达，实际 {got}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

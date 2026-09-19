@@ -222,7 +222,8 @@ mod tests {
             let stop = stop.clone();
             std::thread::spawn(move || {
                 let mut ok = 0usize;
-                let mut torn = 0usize;
+                let mut stale = 0usize; // seq 变了=该帧已被覆盖，数据陈旧但**不是撕裂**
+                let mut torn = 0usize; // 值不自洽=真撕裂（协议 bug 才会出现）
                 while !stop.load(Ordering::Relaxed) {
                     if let Some(fr) = s.read_latest() {
                         match s.borrow_y(&fr, |y| {
@@ -230,18 +231,24 @@ mod tests {
                             y.iter().all(|&b| b == first)
                         }) {
                             Some(true) => ok += 1,
-                            _ => torn += 1,
+                            // None = 借用期间写者翻转覆盖：数据是"旧帧被覆盖"，
+                            // 读者拿到的是完整写入的某个中间态——latest-wins 语义
+                            // 下合法，丢弃即可。撕裂的判据是 Some(false)：
+                            // 值不自洽说明读到半帧，那才是协议错误。
+                            None => stale += 1,
+                            Some(false) => torn += 1,
                         }
                     }
                 }
-                (ok, torn)
+                (ok, stale, torn)
             })
         };
         std::thread::sleep(std::time::Duration::from_millis(200));
         stop.store(true, Ordering::Relaxed);
         writer.join().unwrap();
-        let (ok, torn) = reader.join().unwrap();
+        let (ok, stale, torn) = reader.join().unwrap();
         assert!(ok > 100, "读者应有充足成功读取，实际 {ok}");
-        assert_eq!(torn, 0, "seq 复核应保证无撕裂");
+        assert_eq!(torn, 0, "值不自洽(真撕裂)必须为 0——协议错误");
+        let _ = stale; // 陈旧读取是合法竞争，只统计不断言
     }
 }
