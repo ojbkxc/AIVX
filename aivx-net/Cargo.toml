@@ -1,0 +1,13 @@
+# aivx-net —— 协议层（DESIGN.md §12）。
+# 控制面使用（async）；数据面不 import 本 crate。
+# P0 骨架：DeviceAdapter trait + Capabilities；ONVIF 实现随 P1 落地。
+[package]
+name = "aivx-net"
+version = "0.1.0"
+edition = "2021"
+license-file = "../LICENSE"
+
+[dependencies]
+aivx-events = { path = "../aivx-events" }
+serde = { workspace = true }
+thiserror = { workspace = true }

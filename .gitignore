@@ -1,0 +1,11 @@
+/target
+Cargo.lock.orig
+*.log
+spill/
+evidence/
+record/
+data/
+node_modules/
+frontend/dist
+static/cache
+.env

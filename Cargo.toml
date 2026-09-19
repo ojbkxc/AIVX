@@ -1,0 +1,35 @@
+# ── Workspace ────────────────────────────────────────────────────────
+# 多 crate 工作区：主控制面 + 数据面（aivx-perception，禁 tokio）+
+# 共享事件词汇（aivx-events，仅 serde）+ 协议层（aivx-net，async）。
+# crate 边界即 I5/I11 的编译期强制：perception 无法 import 控制面与 tokio。
+[workspace]
+resolver = "2"
+members = [
+    ".",          # aivx 主 crate（控制面）
+    "aivx-events",
+    "aivx-perception",
+    "aivx-net",
+]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+
+[package]
+name = "aivx"
+version = "0.1.0"
+description = "AIVX — AI Video eXtended: high-performance self-hosted AI NVR with three-layer AI, zero-copy frame path and event sourcing"
+edition = "2021"
+license-file = "LICENSE"
+
+[dependencies]
+aivx-events = { path = "aivx-events" }
+aivx-perception = { path = "aivx-perception" }
+aivx-net = { path = "aivx-net" }
+tokio = { version = "1", features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

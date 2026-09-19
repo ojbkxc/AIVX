@@ -1,0 +1,17 @@
+# aivx-perception —— 数据面（DESIGN.md §2-§4）。
+#
+# I5/I11 的编译期强制：本 crate 禁 tokio（数据面是同步 OS 线程）。
+# CI 断言：cargo tree -i tokio -p aivx-perception 必须为空。
+[package]
+name = "aivx-perception"
+version = "0.1.0"
+edition = "2021"
+license-file = "../LICENSE"
+
+[dependencies]
+aivx-events = { path = "../aivx-events" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# P0 不引 ort/opencv —— LatestFrameSlot/PlaneBridge/EMA 先行，推理 P2 落地。
+# 禁 tokio（I5/I11）：CI 断言 cargo tree -i tokio -p aivx-perception 为空。

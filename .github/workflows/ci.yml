@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # I5/I11 机器强制：数据面 crate 禁 tokio。
+  # cargo tree -i tokio -p aivx-perception 若有依赖则非空退出 → CI 红。
+  invariant-crate-boundary:
+    name: Invariant I5/I11 (perception no-tokio)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: perception 禁 tokio（出现即失败）
+        run: |
+          if cargo tree -i tokio -p aivx-perception 2>/dev/null | grep -q "tokio"; then
+            echo "::error::I5/I11 违反：aivx-perception 依赖了 tokio"
+            cargo tree -i tokio -p aivx-perception
+            exit 1
+          fi
+      - name: events 仅 serde（出现其他重依赖即失败）
+        run: |
+          deps=$(cargo tree -p aivx-events --no-dedupe 2>/dev/null | grep -v "^aivx-events" | awk '{print $1}' | sort -u)
+          bad=$(echo "$deps" | grep -vE "^(serde|serde_derive|proc-macro2|quote|syn|unicode-ident)$" || true)
+          if [ -n "$bad" ]; then
+            echo "::error::aivx-events 出现白名单外依赖:"
+            echo "$bad"
+            exit 1
+          fi
+
+  test:
+    name: Test (invariants as code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 全部测试（含 ADR-022/023/026/028 机器强制）
+        run: cargo test --workspace --locked
+      - name: 关键不变量测试名单（可视化确认）
+        run: |
+          cargo test --workspace -- --list 2>/dev/null | grep -E \
+            "ordered_fanout_no_gaps|critical_never_lost|seq_recovers|zombie_alarm|calibration_period|concurrent_smoke" \
+            || (echo "::error::不变量测试缺失" && exit 1)
+
+  build:
+    name: Build (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - name: 骨架自检
+        run: ./target/release/aivx

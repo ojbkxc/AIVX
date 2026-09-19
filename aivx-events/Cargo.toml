@@ -1,0 +1,15 @@
+# aivx-events —— 两平面共用的事件词汇表。
+# I5/I11 强制：仅依赖 serde —— 数据面（无 tokio）与控制面（tokio）都能 import。
+# CI 断言：cargo tree -p aivx-events 不得出现 tokio。
+[package]
+name = "aivx-events"
+version = "0.1.0"
+edition = "2021"
+license-file = "../LICENSE"
+
+[dependencies]
+serde = { workspace = true }
+
+# 仅测试用（roundtrip 验证）；生产依赖保持仅 serde。
+[dev-dependencies]
+serde_json = { workspace = true }
