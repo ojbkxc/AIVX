@@ -189,18 +189,22 @@ mod tests {
     }
 
     /// 并发压力：写者狂写 + 读者狂读——无 panic、无撕裂（seq 复核兜底）。
+    ///
+    /// 生产路径是"写者线程独占 &mut Slot"（单写者）。本测试用原始指针
+    /// 模拟写者线程与读者线程并发持有同一 Slot 的最坏情况；unsafe 仅出现
+    /// 在测试（生产由所有权保证：写者独占 &mut，读者经 Arc 只读方法）。
     #[test]
     fn concurrent_smoke() {
         let s = Arc::new(slot());
         let stop = Arc::new(AtomicBool::new(false));
-        s.write_val(0);
-
+        // 初始帧：原始指针写一次（仅测试；生产由独占写者线程完成）
+        unsafe {
+            (*(Arc::as_ptr(&s) as *mut LatestFrameSlot)).write_val(0);
+        }
         let writer = {
             let s = s.clone();
             let stop = stop.clone();
             std::thread::spawn(move || {
-                // Arc<Slot> 的 write_val 需要可变——P0 测试用内部可变性压力：
-                // 经由原始指针绕过 Arc 仅供压测（生产路径是单写者独占 &mut）。
                 let p = Arc::as_ptr(&s) as *mut LatestFrameSlot;
                 let mut v = 0u8;
                 while !stop.load(Ordering::Relaxed) {

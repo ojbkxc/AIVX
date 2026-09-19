@@ -162,8 +162,6 @@ pub fn replay_spills(dir: &PathBuf, tx: &SyncSender<Event>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aivx_events::AlarmId;
-    use std::time::Duration;
 
     fn alarm(id: u64) -> Event {
         Event::AlarmRaised {
@@ -193,11 +191,11 @@ mod tests {
         let (bridge, rx) = PlaneBridge::new(4, Some(dir.clone()));
 
         // 灌满（容量 4）——前 4 条进队列
-        for i in 0..4 {
+        for _ in 0..4 {
             bridge.emit(stream_down()); // Info
         }
         // 现在 Info 满了：Info 被丢计数；Critical 全部走 spill
-        for i in 0..10 {
+        for i in 0..10u64 {
             let ev = alarm(i);
             bridge.emit(ev.clone());
         }

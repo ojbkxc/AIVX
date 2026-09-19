@@ -10,7 +10,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
 use aivx_events::{AlarmId, Event};
-use aivx_perception::PlaneBridge;
+use aivx_perception::bridge::PlaneBridge;
 
 use crate::memory::{MemEventStore, MemProjections, StoredEvent};
 
