@@ -19,6 +19,7 @@ use axum::{Json, Router};
 use tower_http::services::ServeDir;
 
 use aivx_events::Event;
+use std::sync::atomic::Ordering;
 use aivx_net::Device;
 
 use aivx::memory::{MemEventStore, MemProjections};
@@ -54,18 +55,17 @@ fn dirs_home() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// API 状态：事件链句柄（P9b 设备表为空——列表来自投影器，报警走事件流）。
+/// API 状态：事件链句柄 + CameraManager（P8a 起设备来自 YAML 编排）。
 #[derive(Clone)]
 struct ApiState {
     store: Arc<MemEventStore>,
     projections: Arc<MemProjections>,
     db: Arc<tokio::sync::Mutex<DbWriter>>,
+    cameras: Arc<cameras::CameraManager>,
 }
 
-async fn list_devices(State(_s): State<ApiState>) -> Json<Vec<Device>> {
-    // P9b：无设备编排，返回空列表（前端正常渲染空态）。
-    // P8 CameraManager 接入后：读设备表（SeaORM）+ 在线状态（投影器）。
-    Json(Vec::new())
+async fn list_devices(State(s): State<ApiState>) -> Json<Vec<Device>> {
+    Json(s.cameras.devices())
 }
 
 async fn list_alarms(State(s): State<ApiState>) -> impl IntoResponse {
@@ -77,10 +77,26 @@ async fn list_alarms(State(s): State<ApiState>) -> impl IntoResponse {
 }
 
 async fn healthz(State(s): State<ApiState>) -> impl IntoResponse {
+    // 每路流状态（数据面 AtomicU64 直读——DESIGN.md §14）
+    let streams: Vec<serde_json::Value> = s
+        .cameras
+        .cameras
+        .iter()
+        .map(|c| {
+            let m = &c.bridge.metrics;
+            serde_json::json!({
+                "id": c.device.id,
+                "state": aivx_perception::stream::state::name(m.stream_state.load(Ordering::Relaxed)),
+                "decode_frames": m.decode_frames.load(Ordering::Relaxed),
+                "inferences": m.inferences.load(Ordering::Relaxed),
+            })
+        })
+        .collect();
     Json(serde_json::json!({
         "status": "ok",
         "max_seq": s.store.max_seq(),
         "version": env!("CARGO_PKG_VERSION"),
+        "streams": streams,
     }))
 }
 
@@ -115,6 +131,7 @@ async fn main() {
         store: store.clone(),
         projections: projections.clone(),
         db: db.clone(),
+        cameras: cameras.clone(),
     };
     smoke_event_chain(&state).await;
     assert!(
@@ -122,17 +139,18 @@ async fn main() {
         "ADR-022 violated: fan-out has gaps"
     );
 
-    // forwarder：数据面桥（P9b 无生产者，channel 保持开放供 P8 摄像头接入）。
-    // forwarder 自带独立 DbWriter（Arc 包裹与主链一致的 store/projections——
-    // P8 CameraManager 接入后统一为单写者）。
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Event>(1024);
+    // forwarder：CameraManager 的全局汇聚 rx → DbWriter（P8a 起为真实事件上游）。
+    let cam_config = cfg.data_dir.join("config.yml");
+    let record_dir = cfg.data_dir.join("record");
+    let cameras = Arc::new(cameras::CameraManager::load_yaml(&cam_config, record_dir)?);
+    let cam_rx = cameras.event_rx();
     let fstore = store.clone();
     let fproj = projections.clone();
     tokio::spawn(async move {
-        forwarder(rx, DbWriter::new(fstore, fproj), None).await;
+        // spawn_blocking：forwarder 的 recv 是阻塞式（std mpsc）——控制面
+        // runtime 不背阻塞 IO（ADR-022 链路保持不变）
+        forwarder(cam_rx, DbWriter::new(fstore, fproj), None).await;
     });
-    // tx 存活保持 channel 不关——forwarder 常驻 drain（P8 数据面从此接入）
-    std::mem::forget(tx);
 
     // Projector 常驻循环：P9b 库空 + 无事件 → 挂起保持句柄（P8 接 DbWriter fan-out）
     tokio::spawn(async move {

@@ -8,6 +8,7 @@
 //! ADR-022 是 P0 最重要的验证点：事件链上不存在任何"可能丢"的环节。
 
 pub mod agent;
+pub mod cameras;
 pub mod cognition;
 pub mod cognition_llm;
 pub mod memory;

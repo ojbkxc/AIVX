@@ -1,0 +1,85 @@
+# AIVX 设备清单（P8a——字段习惯对齐用户的 Frigate 生产配置）
+# 路径：AIVX_DATA_DIR/config.yml（服务器部署形态为 /opt/aivx/data/config.yml）
+
+cameras:
+  # ── TP-LINK NVR 1（192.168.31.201）──
+  tp_1-1: # 固定相机（通道 1）
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:qq1657642978@192.168.31.201:554/stream1&channel=1
+          roles: [detect]
+    detect:
+      enabled: true
+      width: 1280
+      height: 720
+    record:
+      enabled: false
+    snapshots:
+      enabled: true
+      retain:
+        default: 10
+        objects:
+          person: 5
+
+  tp_1-2: # 移动相机（通道 2）
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:qq1657642978@192.168.31.201:554/stream1&channel=2
+          roles: [detect]
+    detect:
+      enabled: true
+      width: 1280
+      height: 720
+    record:
+      enabled: true
+      motion:
+        days: 7 # 移动侦测录像保留 7 天
+    snapshots:
+      enabled: true
+      retain:
+        default: 10
+        objects:
+          person: 5
+
+  # ── TP-LINK NVR 2（192.168.31.202）──
+  tp_2-1: # 固定相机（通道 1）
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:qq1657642978@192.168.31.202:554/stream1&channel=1
+          roles: [detect]
+    detect:
+      enabled: true
+      width: 1280
+      height: 720
+    record:
+      enabled: false
+    snapshots:
+      enabled: true
+      retain:
+        default: 10
+        objects:
+          person: 5
+
+  tp_2-2: # 移动相机（通道 2）
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: rtsp://admin:qq1657642978@192.168.31.202:554/stream1&channel=2
+          roles: [detect]
+    detect:
+      enabled: true
+      width: 1280
+      height: 720
+    record:
+      enabled: true
+      motion:
+        days: 7 # 移动侦测录像保留 7 天
+    snapshots:
+      enabled: true
+      retain:
+        default: 10
+        objects:
+          person: 5
