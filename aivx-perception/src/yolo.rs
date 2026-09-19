@@ -19,9 +19,14 @@ use crate::pool::{Det, EngineKey, InferBackend};
 use crate::yolo_math::{nms, nv12_to_rgb_float, parse_output};
 
 /// ort YOLO 后端（模型缓存 + 批前向）。
+///
+/// ort 2.0.0-rc.13 API（按 docs.rs 验证）：
+/// - `Session::builder()?` 返回 Result<SessionBuilder>
+/// - `.commit_from_file(path)` 加载模型（非 with_model_from_file）
+/// - `session.run(...)` 取 `&mut self`（内部非线程安全），输入用 `inputs!` 宏
 pub struct OrtYoloBackend {
-    /// model_id → ort Session（ADR-025 同键共享）。
-    sessions: Mutex<HashMap<String, ort::Session>>,
+    /// model_id → ort Session（ADR-025 同键共享）。Mutex 保证 run 的 &mut。
+    sessions: Mutex<HashMap<String, ort::session::Session>>,
     /// NMS IoU 阈值（默认 0.45）。
     iou_threshold: f32,
     /// 置信度阈值（默认 0.4）。
@@ -33,8 +38,9 @@ pub struct OrtYoloBackend {
 impl OrtYoloBackend {
     /// 加载模型（`model_path` 为 ONNX 文件路径）。失败返回描述。
     pub fn new(model_path: &str, conf: f32, iou: f32) -> Result<Self, String> {
-        let session = ort::Session::builder()
-            .with_model_from_file(model_path)
+        let session = ort::session::Session::builder()
+            .map_err(|e| format!("ort builder 失败: {e}"))?
+            .commit_from_file(model_path)
             .map_err(|e| format!("ort 加载模型失败: {e}"))?;
         let mut sessions = HashMap::new();
         sessions.insert("default".to_string(), session);
@@ -46,19 +52,20 @@ impl OrtYoloBackend {
         })
     }
 
-    /// 用新模型 key 加载（懒加载：按 EngineKey.model_id 缓存）。
-    fn session_for(&self, key: &EngineKey) -> Result<ort::Session, String> {
+    /// 用新模型 key 取可变 session（run 需 &mut self）。
+    fn session_for(&self, key: &EngineKey) -> Result<std::sync::MutexGuard<'_, ort::session::Session>, String> {
         let mut sessions = self.sessions.lock().unwrap();
-        if let Some(s) = sessions.get(&key.model_id) {
-            return Ok(s.clone());
+        if sessions.get(&key.model_id).is_some() {
+            Ok(std::sync::MutexGuard::map(sessions, |m| m.get_mut(&key.model_id).unwrap()))
+        } else {
+            Err(format!("模型 {} 未加载", key.model_id))
         }
-        Err(format!("模型 {} 未加载", key.model_id))
     }
 }
 
 impl InferBackend for OrtYoloBackend {
     fn detect(&self, key: &EngineKey, inputs: &[Vec<u8>]) -> Vec<Vec<Det>> {
-        let session = match self.session_for(key) {
+        let mut session = match self.session_for(key) {
             Ok(s) => s,
             Err(_) => return inputs.iter().map(|_| Vec::new()).collect(),
         };
@@ -69,6 +76,8 @@ impl InferBackend for OrtYoloBackend {
             batch.extend(nv12_to_rgb_float(inp, key.input_w, key.input_h));
         }
         let shape = [n as i64, 3, 640, 640];
+        // ort rc.13: 用 inputs! 宏 + TensorRef::from_array_view，或 Vec<Value>。
+        // 这里用 Vec<Value>（docs: run 接受 Vec/array/HashMap of Values）。
         let tensor = match ort::value::Value::from_array((batch, shape)) {
             Ok(v) => v,
             Err(_) => return inputs.iter().map(|_| Vec::new()).collect(),
