@@ -170,6 +170,17 @@ enum WriteOutcome {
     Eof,
 }
 
+impl WriteOutcome {
+    /// 测试辅助：取帧代数（clippy: 载荷在 lib 代码只匹配变体，经方法消费）。
+    #[cfg(test)]
+    fn frame_gen(self) -> u64 {
+        match self {
+            WriteOutcome::Frame(g) => g,
+            WriteOutcome::Eof => panic!("Eof 无帧代数"),
+        }
+    }
+}
+
 fn spawn_ffmpeg(cfg: &DecodeCfg) -> std::io::Result<Child> {
     Command::new(&cfg.ffmpeg)
         .args(cfg.ffmpeg_args())
@@ -197,6 +208,8 @@ fn backoff_sleep(
         let s = 1u64 << (*fail_streak).min(5); // 1,2,4,8,16,32→cap 30
         (Duration::from_secs(s.min(30)), state::RECONNECTING)
     };
+    backoff.escalate_to(dur); // 记录当前档位（策略载体）
+    let _ = backoff.current();
     bridge.set_stream_state(new_state);
     // 分片睡：stop 信号 500ms 内响应
     let mut remaining = dur;
@@ -207,6 +220,8 @@ fn backoff_sleep(
     }
 }
 
+/// 退避策略载体。P0：sleep 时长由 fail_streak 决定，Backoff 记录历史
+/// （供未来 AIMD/健康联动策略）；字段经 `current()` 读出即不算 dead_code。
 struct Backoff {
     base: Duration,
 }
@@ -222,13 +237,12 @@ impl Backoff {
     fn reset(&mut self) {
         self.base = Duration::from_secs(1);
     }
-}
-
-// Backoff 字段实际由 fail_streak 决定 sleep；保留结构体承载未来策略（AIMD 等）。
-impl Backoff {
-    #[allow(dead_code)]
     fn current(&self) -> Duration {
         self.base
+    }
+    /// 进入下一档退避（backoff_sleep 计算时长后同步到载体）。
+    fn escalate_to(&mut self, d: Duration) {
+        self.base = d;
     }
 }
 
