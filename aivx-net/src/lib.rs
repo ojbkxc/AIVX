@@ -172,6 +172,9 @@ pub mod transport;
 /// ONVIF SOAP 客户端（P8：真实 HTTP POST + Digest + XML 构造）。
 pub mod onvif;
 
+/// TP-LINK IPC 私有控制协议（P8c：md5 挑战登录 + stok + /ds RPC，实证 2026-09-20）。
+pub mod tplink_ipc;
+
 #[cfg(test)]
 mod tests {
     use super::*;
