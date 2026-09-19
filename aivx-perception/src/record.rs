@@ -70,24 +70,20 @@ pub fn record_loop(cfg: RecordCfg, bridge: Arc<PlaneBridge>) {
     let _ = std::fs::create_dir_all(cfg.device_dir());
     let mut backoff_secs = 1u64;
     while !bridge.control.stop.load(Ordering::Relaxed) {
-        match spawn_recorder(&cfg) {
-            Ok(mut child) => {
-                backoff_secs = 1;
-                bridge.emit(Event::StreamUp {
-                    device_id: cfg.device_id.clone(),
-                    mono_ns: crate::mono_ns(),
-                });
-                // ffmpeg 前台跑：等它退出（断流/stop）
-                let status = child.wait();
-                // stop 触发的 kill：直接退出
-                if bridge.control.stop.load(Ordering::Relaxed) {
-                    let _ = child.kill();
-                    return;
-                }
+        if let Ok(mut child) = spawn_recorder(&cfg) {
+            backoff_secs = 1;
+            bridge.emit(Event::StreamUp {
+                device_id: cfg.device_id.clone(),
+                mono_ns: crate::mono_ns(),
+            });
+            // ffmpeg 前台跑：等它退出（断流/stop）
+            let status = child.wait();
+            // stop 触发的退出：直接返回（child 已结束）
+            if bridge.control.stop.load(Ordering::Relaxed) {
                 let _ = status;
-                // 崩了 → 退避重拉
+                return;
             }
-            Err(_) => {}
+            // 崩了 → 退避重拉
         }
         // 退避（stop 500ms 粒度响应）
         let mut remaining = Duration::from_secs(backoff_secs.min(30));
