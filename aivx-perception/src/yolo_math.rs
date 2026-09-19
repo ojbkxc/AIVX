@@ -39,6 +39,7 @@ pub fn parse_output(output: &[f32], input_size: u32, conf: f32) -> Vec<(f32, f32
 }
 
 /// IoU 计算。
+#[allow(clippy::too_many_arguments)]
 pub fn iou(ax: f32, ay: f32, aw: f32, ah: f32, bx: f32, by: f32, bw: f32, bh: f32) -> f32 {
     let ix1 = ax.max(bx);
     let iy1 = ay.max(by);
