@@ -37,6 +37,7 @@ dependencies = [
  "md-5",
  "reqwest",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 
