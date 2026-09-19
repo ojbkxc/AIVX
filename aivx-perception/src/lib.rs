@@ -25,6 +25,7 @@ pub mod config;
 pub mod frame;
 pub mod motion;
 pub mod pool;
+pub mod pool_adapter;
 pub mod record;
 pub mod rules;
 pub mod stream;

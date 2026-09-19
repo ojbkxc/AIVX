@@ -4,8 +4,9 @@
 //!   slot 读最新帧 → EMA 运动（Y 平面，~2ms）→ 运动首帧触发推理 →
 //!   事件 try_send（I12 分级）
 //!
-//! P1 阶段：推理以 trait 注入（桩实现驱动端到端延迟断言 I3；
-//! ort YOLO + ByteTrack + 规则引擎在 P2 换真实现，本文件热路径结构不变）。
+//! 推理以 [`FrameAnalyzer`] trait 注入：
+//! - [`MotionStubAnalyzer`]：测试桩（驱动 I3 延迟断言，无模型依赖）
+//! - `OrtYoloBackend`（feature ort-yolo）：真实 YOLO（`DetectorPool` 接入点）
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -16,14 +17,14 @@ use crate::frame::LatestFrameSlot;
 use crate::motion::EmaMotion;
 use aivx_events::{DeviceId, Event};
 
-/// 推理接口（P2 换 ort YOLO + DetectorPool 攒批；签名保持不变）。
+/// 推理接口（`OrtYoloBackend` 实现；测试用桩）。
 pub trait FrameAnalyzer: Send {
     /// 输入 NV12 帧副本（scratch），输出检测框。
     fn detect(&mut self, nv12: &[u8]) -> Vec<Det>;
 }
 
-/// 检测结果（P2 扩展 label/score/keypoints；P0 桩只有框）。
-#[derive(Debug, Clone, Copy)]
+/// 检测结果。
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Det {
     pub x: u32,
     pub y: u32,
@@ -31,7 +32,7 @@ pub struct Det {
     pub h: u32,
 }
 
-/// 运动即报一个框的桩（驱动 I3 断言；真 YOLO 在 P2）。
+/// 运动即报一个框的桩（驱动 I3 断言；生产换 OrtYoloBackend）。
 pub struct MotionStubAnalyzer;
 
 impl FrameAnalyzer for MotionStubAnalyzer {
