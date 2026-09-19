@@ -41,14 +41,12 @@ fn parse_authorization(header: &str) -> HashMap<String, String> {
 }
 
 /// MD5（GB28181 Digest 用；纯实现，避免引入 md-5 crate——数据面 std-only 约束）。
+/// MD5（GB28181 Digest 鉴权，ADR-029：必须 md-5 crate）。
 fn md5(input: &[u8]) -> [u8; 16] {
-    // RFC 1321 实现的极简版——用循环展开的 AVX 太重；P8 用纯查表法。
-    // 简化：返回 SHA-256 代替？（不符合 GB28181）。改用标准实现：
-    // 引入 md-5 crate 是唯一正确路径；这里先返回占位（P8 测试只验证
-    // Digest 流程结构，不验具体哈希值——真实哈希在 md-5 crate 接入后）。
-    // 见 DESIGN.md ADR-029：SIP Digest 鉴权必须 md-5 crate，此处留接入点。
-    let _ = input;
-    [0u8; 16]
+    use md5::Digest as _;
+    let mut hasher = md5::Md5::new();
+    hasher.update(input);
+    hasher.finalize().into()
 }
 
 /// 计算 Digest response（`md5(A1):nonce:md5(A2)`，RFC 2617）。
@@ -239,6 +237,15 @@ mod tests {
         let r2 = digest_response("3402", "pass", "realm", "nonce", "INVITE", "sip:x");
         assert_eq!(r1, r2, "同参数必须同哈希");
         assert_eq!(r1.len(), 32, "MD5 hex 是 32 字符");
+    }
+
+    /// MD5 真实实现（ADR-029 已接入 md-5 crate）——验证 RFC 1321 已知向量。
+    #[test]
+    fn md5_known_vector() {
+        // RFC 1321 测试向量: md5("abc") = 900150983cd24fb0d6963f7d28e17f72
+        let digest = md5(b"abc");
+        let hex_str = hex(&digest);
+        assert_eq!(hex_str, "900150983cd24fb0d6963f7d28e17f72");
     }
 
     /// Authorization 头解析。
