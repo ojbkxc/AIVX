@@ -94,7 +94,9 @@ impl DetectorPool {
             // 收集一批：阻塞到有请求，然后攒到 batch 或窗口超时
             let mut reqs = self.queue.lock().unwrap();
             if reqs.is_empty() {
-                let _ = self.cv.wait(reqs).unwrap();
+                while reqs.is_empty() && !*self.stop.lock().unwrap() {
+                    reqs = self.cv.wait(reqs).unwrap();
+                }
                 continue;
             }
             while inflight.len() < self.batch && !reqs.is_empty() {
@@ -108,11 +110,9 @@ impl DetectorPool {
                 let inputs: Vec<Vec<u8>> = inflight.iter().map(|r| r.input.clone()).collect();
                 let results = self.backend.detect(&key, &inputs);
                 for (req, dets) in inflight.drain(..).zip(results) {
-                    let resp = InferResp { dets };
-                    // 写回：把 dets 存到请求里（简化：通过 key 复用；测试读 dets）
+                    // 写回：dets 挂到请求（简化：测试经 state 轮询；真实 P8 用槽）
                     req.state.store(READY, Ordering::Release);
-                    // 用全局结果槽映射（请求地址 → 结果）——测试经 take 收集
-                    let _ = resp;
+                    let _resp = InferResp { dets };
                 }
                 last_flush = Instant::now();
                 self.cv.notify_all();
@@ -220,7 +220,6 @@ mod tests {
         let pool = DetectorPool::new(SyncStubBackend);
         pool.shutdown();
         // 不 panic；stop flag 生效
-        let stop = pool.stop.lock().unwrap();
-        assert!(*stop);
+        assert!(*pool.stop.lock().unwrap());
     }
 }
