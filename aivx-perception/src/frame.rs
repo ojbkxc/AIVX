@@ -77,6 +77,10 @@ impl LatestFrameSlot {
     ///
     /// 单写者约定由调用方保证（T1 线程唯一持有 Arc<LatestFrameSlot> 的写权，
     /// P8a：Arc 共享后写 API 走共享入口——内部锁保护 seq 协议）。
+    ///
+    /// clippy::mut_from_ref 是本 API 的本质（共享单写者模式）——SAFETY 注释
+    /// 承载互斥论证，此处显式允许该 lint 是设计的一部分而非掩盖。
+    #[allow(clippy::mut_from_ref)]
     pub fn begin_write_shared(&self) -> (usize, &mut [u8]) {
         let idx = 1 - self.active.load(Ordering::Acquire);
         let cur = self.seq[idx].fetch_add(1, Ordering::AcqRel); // 偶→奇
