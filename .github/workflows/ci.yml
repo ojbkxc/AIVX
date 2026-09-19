@@ -58,7 +58,7 @@ jobs:
       - name: perception 测试（串行——I1 全局分配计数器需独占）
         run: cargo test -p aivx-perception --locked -- --test-threads=1
       - name: ort-yolo 纯逻辑测试（无需下载模型——输出解析/NMS/IoU 编译验证）
-        run: cargo test -p aivx-perception --locked --features ort-yolo yolo:: -- --test-threads=1
+        run: "cargo test -p aivx-perception --locked --features ort-yolo yolo -- --test-threads=1"
       - name: 其余测试（含 ADR-022/023/026/028 机器强制；排除 perception 防重跑污染 I1）
         run: cargo test --workspace --locked --exclude aivx-perception
       - name: 关键不变量测试名单（可视化确认）
