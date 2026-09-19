@@ -8,7 +8,7 @@
 
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -145,7 +145,8 @@ fn write_exact(
     let mut read_total = 0usize;
     let mut chunk = [0u8; 16384];
     while read_total < frame_size {
-        match stdout.read(&mut chunk[..chunk.len().min(frame_size - read_total)]) {
+        let want = chunk.len().min(frame_size - read_total);
+        match stdout.read(&mut chunk[..want]) {
             Ok(0) => {
                 slot.rollback_write(idx);
                 return WriteOutcome::Eof;
@@ -193,7 +194,7 @@ fn backoff_sleep(
     let (dur, new_state) = if *fail_streak >= 10 {
         (Duration::from_secs(300), state::DEGRADED)
     } else {
-        let s = 1u64 << fail_streak.min(5); // 1,2,4,8,16,32→cap 30
+        let s = 1u64 << (*fail_streak).min(5); // 1,2,4,8,16,32→cap 30
         (Duration::from_secs(s.min(30)), state::RECONNECTING)
     };
     bridge.set_stream_state(new_state);

@@ -55,7 +55,6 @@ pub fn analysis_loop(
     let mut motion = EmaMotion::new(slot.width(), slot.height());
     let mut scratch: Vec<u8> = vec![0; slot.frame_size()]; // 预分配（I1）
     let mut last_gen: u64 = 0;
-    let mut calib_deadline_gen: u64 = 0; // 校准截止代（首帧时定）
 
     loop {
         if bridge.control.stop.load(Ordering::Relaxed) {
@@ -72,9 +71,6 @@ pub fn analysis_loop(
         if fr.gen == last_gen {
             std::thread::sleep(Duration::from_millis(1));
             continue; // 无新帧
-        }
-        if last_gen == 0 {
-            calib_deadline_gen = fr.gen + 30; // ADR-023：首帧起 30 帧校准
         }
         last_gen = fr.gen;
 
