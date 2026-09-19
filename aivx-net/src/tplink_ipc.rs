@@ -196,7 +196,7 @@ impl IpcSession {
 fn str_field(v: &Value, key: &str) -> String {
     v.get(key)
         .and_then(|x| x.as_str())
-        .map(|s| url_decode(s))
+        .map(url_decode)
         .unwrap_or_default()
 }
 
