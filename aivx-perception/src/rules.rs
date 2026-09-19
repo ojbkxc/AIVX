@@ -233,20 +233,26 @@ mod tests {
         assert!(!point_in_polygon(0.95, 0.95, &z));
     }
 
-    /// 几何正确性：叉积越线方向。
+    /// 几何正确性：叉积越线方向（语义对齐 rebucca `biz_rules.cross_line_direction`）。
+    ///
+    /// 线 a=(0.3,0.5)→b=(0.7,0.5) 朝右。cross(a,b,p) = 0.4×(p.y−0.5)：
+    /// 点在线上方(y<0.5) 为负，下方为正。rebucca 语义 forward = c1>0>c2
+    /// （**下方→上方**）；reverse = c1<0<c2（上方→下方）。
     #[test]
     fn cross_line_direction_geometry() {
         let a = (0.3, 0.5);
         let b = (0.7, 0.5);
-        // 从上(0.5,0.3)到下(0.5,0.7)：a→b 向量朝右，上→下是正向(左→右)
+        // 上(0.5,0.3)→下(0.5,0.7)：c1<0<c2 → reverse
         assert_eq!(
             cross_line_direction((0.5, 0.3), (0.5, 0.7), a, b),
-            Some(true)
-        );
-        assert_eq!(
-            cross_line_direction((0.5, 0.7), (0.5, 0.3), a, b),
             Some(false)
         );
+        // 下→上：c1>0>c2 → forward
+        assert_eq!(
+            cross_line_direction((0.5, 0.7), (0.5, 0.3), a, b),
+            Some(true)
+        );
+        // 同侧不跨
         assert_eq!(cross_line_direction((0.1, 0.3), (0.15, 0.3), a, b), None);
     }
 
@@ -289,7 +295,8 @@ mod tests {
         assert!(out_zone.eval(&outside, w, h));
     }
 
-    /// 越线规则：目标跨线触发一次。
+    /// 越线规则：目标跨线触发一次（forward = rebucca 语义：c1>0>c2，即
+    /// 线下方→线上方；见 cross_line_direction_geometry 的数学推导）。
     #[test]
     fn crossed_line_fires_once() {
         let mut eng = RuleEngine::new(vec![AlarmRule::new(
@@ -297,20 +304,20 @@ mod tests {
             Condition::CrossedLine {
                 a: Point { x: 0.3, y: 0.5 },
                 b: Point { x: 0.7, y: 0.5 },
-                forward: true,
+                forward: true, // 下方→上方
             },
         )]);
         let (w, h) = (640u32, 360u32);
-        // 帧1：在线上方 中心(320,144)=(0.5,0.4)
-        let above = vec![sq_track(1, 315, 139)];
-        assert!(eng.evaluate(&above, w, h).is_empty());
-        // 帧2：prev=(0.5,0.4) cur=(0.5,0.6) 跨线正向 → 触发
-        let mut below = sq_track(1, 315, 211); // 中心(320,216)=(0.5,0.6)
-        below.prev_cy = Some(144.0);
-        let fires = eng.evaluate(&[below], w, h);
-        assert_eq!(fires.len(), 1);
-        // 帧3：继续在下方——不重复
-        let below2 = vec![sq_track(1, 315, 211)];
-        assert!(eng.evaluate(&below2, w, h).is_empty());
+        // 帧1：在线下方 中心(320,216)=(0.5,0.6)——匹配(prev 有值)但 prev==cur 不跨
+        let below = vec![sq_track(1, 315, 211)];
+        assert!(eng.evaluate(&below, w, h).is_empty());
+        // 帧2：prev=(0.5,0.6)→cur=(0.5,0.4) 下→上跨线 forward → 触发一次
+        let mut above = sq_track(1, 315, 139); // 中心(320,144)=(0.5,0.4)
+        above.prev_cy = Some(216.0);
+        let fires = eng.evaluate(&[above], w, h);
+        assert_eq!(fires.len(), 1, "下→上 forward 跨线应触发");
+        // 帧3：继续在上方——不重复（I8）
+        let above2 = vec![sq_track(1, 315, 139)];
+        assert!(eng.evaluate(&above2, w, h).is_empty());
     }
 }
