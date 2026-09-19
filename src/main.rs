@@ -122,10 +122,19 @@ async fn main() {
         "ADR-022 violated: fan-out has gaps"
     );
 
-    // forwarder：数据面桥（P9b 无生产者，channel 保持开放供 P8 摄像头接入）
+    // forwarder：数据面桥（P9b 无生产者，channel 保持开放供 P8 摄像头接入）。
+    // forwarder 自带独立 DbWriter（Arc 包裹与主链一致的 store/projections——
+    // P8 CameraManager 接入后统一为单写者）。
     let (tx, rx) = std::sync::mpsc::sync_channel::<Event>(1024);
+    let fstore = store.clone();
+    let fproj = projections.clone();
     tokio::spawn(async move {
-        forwarder(rx, DbWriter::new(MemEventStore::new(), MemProjections::new()), None).await;
+        forwarder(
+            rx,
+            DbWriter::new(fstore, fproj),
+            None,
+        )
+        .await;
     });
     // tx 存活保持 channel 不关——forwarder 常驻 drain（P8 数据面从此接入）
     std::mem::forget(tx);
@@ -144,9 +153,7 @@ async fn main() {
         .route("/api/alarms", get(list_alarms))
         .route("/api/healthz", get(healthz))
         .with_state(state)
-        .fallback_service(
-            ServeDir::new(&cfg.static_dir).append_index_html_on_directories(true),
-        );
+        .fallback_service(ServeDir::new(&cfg.static_dir).append_index_html_on_directories(true));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.port));
     println!(
