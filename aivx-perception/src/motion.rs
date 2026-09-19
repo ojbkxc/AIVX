@@ -94,6 +94,7 @@ impl EmaMotion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alloc::count_scope;
 
     fn black(w: usize, h: usize) -> Vec<u8> {
         vec![0; w * h]
@@ -140,5 +141,39 @@ mod tests {
         }
         let boxes = m.detect(&moved);
         assert!(!boxes.is_empty(), "运动应触发");
+    }
+
+    /// **I1 机器强制**：静止帧（无运动路径）热路径零堆分配。
+    ///
+    /// 这是 DESIGN.md I1 的 CI 断言：`EmaMotion::detect` 在无运动时
+    /// （Vec::new 不分配）+ 校准期（同样 Vec::new）都必须 0 分配。
+    #[test]
+    fn i1_static_frame_zero_allocation() {
+        let mut m = EmaMotion::new(64, 36);
+        let frame = black(64, 36);
+        for _ in 0..35 {
+            m.detect(&frame);
+        }
+        let (n, _) = count_scope(|| {
+            for _ in 0..100 {
+                let boxes = m.detect(&frame);
+                assert!(boxes.is_empty());
+            }
+        });
+        assert_eq!(n, 0, "I1 违反：静止帧热路径发生 {n} 次堆分配");
+    }
+
+    /// **I1 机器强制**：校准期同样零分配。
+    #[test]
+    fn i1_calibration_zero_allocation() {
+        let mut m = EmaMotion::new(64, 36);
+        let frame = vec![128u8; 64 * 36];
+        let (n, _) = count_scope(|| {
+            for _ in 0..30 {
+                let boxes = m.detect(&frame); // 全部在校准期内
+                assert!(boxes.is_empty());
+            }
+        });
+        assert_eq!(n, 0, "I1 违反：校准期热路径发生 {n} 次堆分配");
     }
 }
