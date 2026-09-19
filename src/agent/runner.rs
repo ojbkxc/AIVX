@@ -10,6 +10,7 @@ use crate::agent::llm::{self, ChatMessage, ChatProvider, LlmMessage};
 use crate::agent::session::AgentRole;
 use crate::agent::tools::{self, RiskLevel};
 use crate::agent::ActionContext;
+use serde_json::Value;
 
 /// 请求序号（审批 request_id 唯一性）。
 static REQ_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -70,7 +71,7 @@ pub fn run(
         events.push(AgentEvent::Thinking { turn });
 
         // 工具 schema 传给 provider
-        let tools = tools::openai_tools(&tools::tool_specs());
+        let tools = llm::openai_tools(&tools::tool_specs());
         let resp: LlmMessage = match provider.chat(&convo, Some(&tools)) {
             Ok(r) => r,
             Err(e) => {
