@@ -123,9 +123,7 @@ impl Cognition {
                 device_id,
                 ..
             } => {
-                if let Some(insight_ev) =
-                    self.on_alarm(alarm_id, rule_id, device_id, now_mono)
-                {
+                if let Some(insight_ev) = self.on_alarm(alarm_id, rule_id, device_id, now_mono) {
                     out.push(insight_ev);
                 }
             }

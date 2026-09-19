@@ -58,7 +58,7 @@ pub struct DbWriter {
 impl DbWriter {
     pub fn new(store: Arc<MemEventStore>, projections: Arc<MemProjections>) -> Self {
         let next_seq = store.max_seq() + 1; // ADR-026：重启不回退
-        // 运行期投影器：从 checkpoint 重放追赶 + 之后增量消费 flush 的每个事件。
+                                            // 运行期投影器：从 checkpoint 重放追赶 + 之后增量消费 flush 的每个事件。
         let mut projector = Projector::new(store.clone(), projections.clone());
         // 僵尸清扫（ADR-028）：重建活跃报警集；清扫补发的 AlarmCleared 必须
         // 重新进入事件链（经 flush 正常落库 + fan-out），不能只丢在内存里。
