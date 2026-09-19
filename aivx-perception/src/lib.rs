@@ -23,6 +23,7 @@ pub mod analyze;
 pub mod bridge;
 pub mod frame;
 pub mod motion;
+pub mod record;
 pub mod rules;
 pub mod stream;
 pub mod track;
