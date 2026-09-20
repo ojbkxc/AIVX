@@ -67,3 +67,13 @@ export interface AlarmsSummary {
   projected_events: number;
   items?: Alarm[];
 }
+
+/** 布控配置只读行（/api/config，P8e 降级：RTSP 脱敏 + 录像模式）。 */
+export interface SourceConfig {
+  id: string;
+  name: string;
+  rtsp_main: string | null;
+  rtsp_sub: string | null;
+  record_mode: string;
+  state: string;
+}

@@ -1,23 +1,25 @@
-// 布控配置页（P8d骨架）：规则引擎的画布编辑器随 P8e 接入。
-// 当前展示规则引擎模型说明 + 设备布控状态。
+// 布控配置页（P8e 只读降级）：每路设备的接入地址（RTSP 脱敏）/
+// 录像模式/流状态。画布编辑器（区域/警戒线）随后续阶段接入。
 
 import { useEffect, useState } from 'react';
 import type { ApiClient } from '../api';
-import type { Device } from '../types';
+import type { SourceConfig } from '../types';
 
-const RULE_MODEL = `// 规则模型（DESIGN.md §9，数据驱动）
-Rule {
-  when: Condition 树（And/Or/Not + TrackInZone/LabelIs/Dwell/CrossedLine/SpeedGt/CountGt/TimeIn）
-  window: Option<Sliding>   // 滑动窗口聚合
-  actions: [Notify | Snapshot | Record | VerifyWithLlm]
-  cooldown: Duration
-}`;
+const RECORD_LABEL: Record<string, string> = {
+  off: '关闭',
+  always: '全程录像',
+  motion: '移动侦测',
+};
 
 export function RulesPage({ api }: { api: ApiClient }) {
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [configs, setConfigs] = useState<SourceConfig[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.listDevices().then(setDevices).catch(() => {});
+    api
+      .listConfig()
+      .then((c) => setConfigs(c))
+      .catch((e) => setError(String(e)));
   }, [api]);
 
   return (
@@ -25,19 +27,25 @@ export function RulesPage({ api }: { api: ApiClient }) {
       <div className="page-head">
         <h1>布控配置</h1>
       </div>
-      <div className="rules-model">
-        <pre>{RULE_MODEL}</pre>
-      </div>
       <p className="hint">
-        区域/警戒线画布编辑器随 P8e 接入（canvas 多边形 + 越线方向）。
+        只读视图：接入地址已脱敏（凭据不外泄）。区域/警戒线画布编辑器随后续阶段接入。
       </p>
-      <ul className="rules-device-list">
-        {devices.map((d) => (
-          <li key={d.id}>
-            {d.name} — PTZ {d.capabilities.ptz ? '✓' : '✗'}
-          </li>
+      {error && <p className="status error">配置读取失败：{error}</p>}
+      {configs.length === 0 && !error && <p className="hint">暂无配置的摄像头（data/config.yml）。</p>}
+      <div className="devices device-list">
+        {configs.map((c) => (
+          <div key={c.id} className="device-item">
+            <div className="device-name">
+              {c.name}
+              <span className="badge">{RECORD_LABEL[c.record_mode] ?? c.record_mode}</span>
+            </div>
+            <div className="device-id">{c.rtsp_main ?? '（无主码流）'}</div>
+            <div className="capabilities">
+              <span className="badge">流状态：{c.state}</span>
+            </div>
+          </div>
         ))}
-      </ul>
+      </div>
     </div>
   );
 }

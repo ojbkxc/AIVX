@@ -1,7 +1,7 @@
 // AIVX 前端 API 客户端（对齐 AIGX：管理面走 /api/*，不走 /v1/*）。
 // 类型安全 + 可注入（测试 mock）。
 
-import type { AlarmsSummary, Device, Healthz, Recording } from './types';
+import type { AlarmsSummary, Device, Healthz, Recording, SourceConfig } from './types';
 
 /** API 客户端接口（可注入 mock 测试）。 */
 export interface ApiClient {
@@ -9,6 +9,7 @@ export interface ApiClient {
   healthz(): Promise<Healthz>;
   alarmsSummary(): Promise<AlarmsSummary>;
   listRecordings(deviceId: string): Promise<Recording[]>;
+  listConfig(): Promise<SourceConfig[]>;
 }
 
 /** 真实实现：fetch /api/*（后端 18443，Vite 开发代理）。 */
@@ -36,6 +37,10 @@ export class RealApiClient implements ApiClient {
   async listRecordings(deviceId: string): Promise<Recording[]> {
     return this.get<Recording[]>(`/recordings/${encodeURIComponent(deviceId)}`);
   }
+
+  async listConfig(): Promise<SourceConfig[]> {
+    return this.get<SourceConfig[]>('/config');
+  }
 }
 
 /** 内存 mock（测试用）。 */
@@ -45,6 +50,7 @@ export class MockApiClient implements ApiClient {
     private healthzData?: Healthz,
     private alarmsData?: AlarmsSummary,
     private recordingsData?: Recording[],
+    private configData?: SourceConfig[],
   ) {}
 
   async listDevices(): Promise<Device[]> {
@@ -73,5 +79,9 @@ export class MockApiClient implements ApiClient {
 
   async listRecordings(_deviceId: string): Promise<Recording[]> {
     return this.recordingsData ?? [];
+  }
+
+  async listConfig(): Promise<SourceConfig[]> {
+    return this.configData ?? [];
   }
 }

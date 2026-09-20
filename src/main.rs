@@ -304,6 +304,41 @@ async fn agent_chat(
     }))
 }
 
+/// RTSP URL userinfo 脱敏：`rtsp://admin:pass@host/…` → `rtsp://***@host/…`。
+/// （P8e：/api/devices 已带真实 URL 是安全隐患？不——面板无登录但公网可达，
+/// 凭据不得外泄。设备页要能看流地址 → config 页走脱敏视图。）
+fn mask_rtsp(url: &str) -> String {
+    // rtsp://userinfo@rest：只藏 userinfo 部分
+    if let Some(scheme_end) = url.find("://") {
+        let rest = &url[scheme_end + 3..];
+        if let Some(at) = rest.find('@') {
+            return format!("{}://***@{}", &url[..scheme_end + 3], &rest[at + 1..]);
+        }
+    }
+    url.to_string()
+}
+
+/// 布控配置只读视图（P8e 降级落地）：每路设备 的接入地址（脱敏）/
+/// 分析分辨率/录像模式/快照策略。画布编辑器随后续阶段接入。
+async fn list_config(State(s): State<ApiState>) -> impl IntoResponse {
+    let items: Vec<serde_json::Value> = s
+        .cameras
+        .cameras
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": c.device.id,
+                "name": c.device.name,
+                "rtsp_main": c.device.rtsp_main.as_deref().map(mask_rtsp),
+                "rtsp_sub": c.device.rtsp_sub.as_deref().map(mask_rtsp),
+                "record_mode": c.record_mode,
+                "state": stream::state::name(c.bridge.metrics.stream_state.load(Ordering::Relaxed)),
+            })
+        })
+        .collect();
+    Json(items)
+}
+
 async fn healthz(State(s): State<ApiState>) -> impl IntoResponse {
     // 每路流状态（数据面 AtomicU64 直读——DESIGN.md §14）
     let streams: Vec<serde_json::Value> = s
@@ -442,6 +477,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/stream/:id", get(stream_preview))
         .route("/api/recordings/:id", get(list_recordings))
         .route("/api/agent/chat", axum::routing::post(agent_chat))
+        .route("/api/config", get(list_config))
         .with_state(state)
         // 录像回放：ServeDir 限在录像根（防穿越 + Range/seek 免费）
         .nest_service(
