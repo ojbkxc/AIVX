@@ -434,40 +434,38 @@ async fn main() -> anyhow::Result<()> {
 
     // 段索引扫描（P8e，DESIGN.md §3.3）：10s 轮询录像目录，新段发
     // RecordingSegment 事件进事件链 → 投影器建 recordings 派生表。
-    // Scanner 的 seen 集合跨轮保留（放闭包外）——否则每轮全量重发，
-    // 投影表会堆积同一文件的重复行（线上验证时抓到）。
+    // Scanner 的 seen 集合跨轮保留——否则每轮全量重发，投影表会堆积
+    // 同一文件的重复行（线上验证时抓到）。整轮扫描挪进阻塞线程池：
+    // scanners Mutex 跨 'static 界限（tokio spawn_blocking 硬约束）。
     {
         let cameras_for_scan = Arc::clone(&cameras);
         let scan_dir = cfg.data_dir.join("record");
+        let scanners = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+            String,
+            aivx_perception::record::SegmentScanner,
+        >::new()));
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-            // device_id → scanner（含 seen 集）
-            let mut scanners: std::collections::HashMap<
-                String,
-                aivx_perception::record::SegmentScanner,
-            > = std::collections::HashMap::new();
             loop {
                 interval.tick().await;
-                // T1/T3 之外的低频扫描：spawn_blocking（std fs 直读）。
-                // scanners 以 &mut 借入闭包（Send——字段全是基础类型）
+                // T1/T3 之外的低频扫描：spawn_blocking（std fs 直读）
                 let cams = Arc::clone(&cameras_for_scan);
                 let dir = scan_dir.clone();
-                let scanners_ref = &mut scanners;
+                let scanners = Arc::clone(&scanners);
                 let _ = tokio::task::spawn_blocking(move || {
+                    // 整轮持锁：扫描是 10s 低频后台任务，无并发竞争
+                    let mut scanners = scanners.lock().unwrap();
                     for cam in &cams.cameras {
                         if cam.record_mode == "off" {
                             continue;
                         }
                         let dev_dir = dir.join(aivx_perception::record::sanitize(&cam.device.id));
-                        let scanner =
-                            scanners_ref
-                                .entry(cam.device.id.clone())
-                                .or_insert_with(|| {
-                                    aivx_perception::record::SegmentScanner::new(
-                                        cam.device.id.clone(),
-                                        dev_dir.clone(),
-                                    )
-                                });
+                        let scanner = scanners.entry(cam.device.id.clone()).or_insert_with(|| {
+                            aivx_perception::record::SegmentScanner::new(
+                                cam.device.id.clone(),
+                                dev_dir.clone(),
+                            )
+                        });
                         let bridge = Arc::clone(&cam.bridge);
                         scanner.scan(|ev| bridge.emit(ev));
                     }
