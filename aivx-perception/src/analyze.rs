@@ -84,7 +84,19 @@ pub fn analysis_loop(
             None => continue,
         };
         if boxes.is_empty() {
-            continue; // 静止——不推理（I3 省钱：95% 的帧到此为止）
+            // 静止——不推理（I3 省钱：95% 的帧到此为止），但空帧必须喂
+            // tracker：轨迹 missed 递进，超 max_missed 即结束 → AlarmCleared
+            // （I8 报警有界——否则运动停止后 active 永远挂着）。
+            tracker.update(&[]);
+            for tid in tracker.take_ended() {
+                if let Some(alarm_id) = live_alarms.remove(&tid) {
+                    bridge.emit(Event::AlarmCleared {
+                        alarm_id,
+                        reason: "track_lost".into(),
+                    });
+                }
+            }
+            continue;
         }
 
         // 运动首帧 → 立即推理（事件驱动，非轮询）
@@ -203,10 +215,11 @@ mod tests {
 
         // ── 计时开始：注入与背景强烈差异的运动帧 ──
         // ByteTracker min_hits=3：连续 ≥3 帧命中才确认轨迹（防单帧幽灵）。
-        // 2ms 间隔连注 5 帧白帧（T2 每帧消费一次 gen——gen 去重下同值帧也会推进）。
+        // EMA 背景会向白收敛（连续同值帧差分衰减）——用 255/0 交替帧维持强差分，
+        // 保证整个窗口内 motion 持续出框，喂满 min_hits。
         let t0 = crate::mono_ns();
-        for _ in 0..5 {
-            write_frame(&slot, 255);
+        for i in 0..5 {
+            write_frame(&slot, if i % 2 == 0 { 255 } else { 0 });
             std::thread::sleep(Duration::from_millis(2));
         }
 
@@ -260,9 +273,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         while rx.try_recv().is_ok() {}
 
-        // 持续运动 40 帧（远超 min_hits=3）——期间应只确认 1 条轨迹
-        for _ in 0..40 {
-            write_frame(&slot, 255);
+        // 持续运动 40 帧（远超 min_hits=3）——交替帧维持强差分；
+        // MotionStubAnalyzer 恒返同一框 → ByteTracker IoU=1 同一轨迹 → 只确认 1 条。
+        for i in 0..40 {
+            write_frame(&slot, if i % 2 == 0 { 255 } else { 0 });
             std::thread::sleep(Duration::from_millis(2));
         }
         std::thread::sleep(Duration::from_millis(30));
@@ -278,9 +292,12 @@ mod tests {
             "40 帧持续运动只许 1 次 AlarmRaised（I8 去重），得 {raised}"
         );
 
-        // 静止：背景已收敛白，白帧无运动框 → 空帧喂 tracker → 失配超限 → AlarmCleared
+        // 静止：灰帧（背景在交替中仍近似灰基线）→ 与背景差分小 → 空帧喂
+        // tracker → 失配超 max_missed → AlarmCleared。
+        // 注意：若 EMA 背景尚未完全收敛灰，前几帧可能仍有残余运动框——
+        // 40 帧 @2ms 远超 max_missed=8，清除必然发生。
         for _ in 0..40 {
-            write_frame(&slot, 255);
+            write_frame(&slot, 64);
             std::thread::sleep(Duration::from_millis(2));
         }
         std::thread::sleep(Duration::from_millis(60));
