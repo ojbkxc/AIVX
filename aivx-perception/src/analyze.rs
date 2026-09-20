@@ -12,9 +12,12 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::collections::HashMap;
+
 use crate::bridge::PlaneBridge;
 use crate::frame::LatestFrameSlot;
 use crate::motion::EmaMotion;
+use crate::track::{ByteTracker, TrackId};
 use aivx_events::{DeviceId, Event};
 
 /// 推理接口（`OrtYoloBackend` 实现；测试用桩）。
@@ -50,6 +53,12 @@ pub fn analysis_loop(
     let mut motion = EmaMotion::new(slot.width(), slot.height());
     let mut scratch: Vec<u8> = vec![0; slot.frame_size()]; // 预分配（I1）
     let mut last_gen: u64 = 0;
+    // I8 去重接线（DESIGN.md §5.3）：检测框进 ByteTracker（min_hits=3 防幽灵），
+    // 同一轨迹只在确认时发一次 AlarmRaised；失配超限（track_lost）发 AlarmCleared——
+    // 报警语义有界，active 不会随帧数无限增长。
+    let mut tracker = ByteTracker::new();
+    // 活跃轨迹 → alarm_id（AlarmCleared 要带原 id；TrackId 单调可预测）。
+    let mut live_alarms: HashMap<TrackId, String> = HashMap::new();
 
     loop {
         if bridge.control.stop.load(Ordering::Relaxed) {
@@ -91,19 +100,37 @@ pub fn analysis_loop(
             .fetch_add(crate::mono_ns() - infer_start, Ordering::Relaxed);
         bridge.metrics.inferences.fetch_add(1, Ordering::Relaxed);
 
-        // 推理命中 → 检测事件（规则引擎/跟踪在 analyze 之上消费；I8 去重由规则状态机保证）
-        if !dets.is_empty() {
-            let now = crate::mono_ns();
+        // 推理命中 → ByteTracker（I8 去重）：新确认轨迹发一次 AlarmRaised；
+        // 结束轨迹发 AlarmCleared。运动静止时 tracker 收空帧让轨迹自然失配结束
+        // （max_missed=8 帧后 track_lost）。
+        tracker.update(&dets);
+        let now = crate::mono_ns();
+        for tr in tracker.take_appeared() {
+            let alarm_id = format!("det-{}-{}", tr.id, now);
             bridge.mark_alarm(now);
             bridge.emit(Event::AlarmRaised {
-                alarm_id: format!("det-{}-{}", fr.gen, now),
+                alarm_id: alarm_id.clone(),
                 device_id: device_id.clone(),
                 rule_id: "detect".into(),
                 zone_id: None,
-                track: None,
+                track: Some(aivx_events::TrackSnapshot {
+                    track_id: tr.id,
+                    label: "motion".into(),
+                    score: tr.hits as f32,
+                    box_: [tr.x as f32, tr.y as f32, tr.w as f32, tr.h as f32],
+                }),
                 frame_gen: fr.gen,
                 mono_ns: now,
             });
+            live_alarms.insert(tr.id, alarm_id);
+        }
+        for tid in tracker.take_ended() {
+            if let Some(alarm_id) = live_alarms.remove(&tid) {
+                bridge.emit(Event::AlarmCleared {
+                    alarm_id,
+                    reason: "track_lost".into(),
+                });
+            }
         }
         bridge
             .metrics
@@ -175,8 +202,13 @@ mod tests {
         while rx.try_recv().is_ok() {} // 清空一切残留（如有）
 
         // ── 计时开始：注入与背景强烈差异的运动帧 ──
+        // ByteTracker min_hits=3：连续 ≥3 帧命中才确认轨迹（防单帧幽灵）。
+        // 2ms 间隔连注 5 帧白帧（T2 每帧消费一次 gen——gen 去重下同值帧也会推进）。
         let t0 = crate::mono_ns();
-        write_frame(&slot, 255);
+        for _ in 0..5 {
+            write_frame(&slot, 255);
+            std::thread::sleep(Duration::from_millis(2));
+        }
 
         let mut got_alarm = false;
         let start = std::time::Instant::now();
@@ -202,5 +234,69 @@ mod tests {
             "运动→报警 {elapsed_ms:.1}ms 超出 CI 抖动余量 250ms"
         );
         println!("I3 synthetic motion→alarm: {elapsed_ms:.2}ms (design budget <100ms)");
+    }
+
+    /// **I8 去重断言**：持续运动 N 帧只产生**一次** AlarmRaised（轨迹确认时），
+    /// 静止后轨迹结束（max_missed=8）必发 AlarmCleared——active 有界。
+    #[test]
+    fn continuous_motion_single_alarm_then_cleared() {
+        let slot = Arc::new(LatestFrameSlot::new(64, 36));
+        let (bridge, rx) = PlaneBridge::new(512, None);
+        let bridge = Arc::new(bridge);
+
+        let t = {
+            let slot = slot.clone();
+            let bridge = bridge.clone();
+            std::thread::spawn(move || {
+                analysis_loop("cam-dedup".into(), slot, bridge, MotionStubAnalyzer)
+            })
+        };
+
+        // 校准期：30 帧灰帧建背景
+        for _ in 0..35 {
+            write_frame(&slot, 64);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        std::thread::sleep(Duration::from_millis(30));
+        while rx.try_recv().is_ok() {}
+
+        // 持续运动 40 帧（远超 min_hits=3）——期间应只确认 1 条轨迹
+        for _ in 0..40 {
+            write_frame(&slot, 255);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        std::thread::sleep(Duration::from_millis(30));
+
+        let mut raised = 0;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, Event::AlarmRaised { .. }) {
+                raised += 1;
+            }
+        }
+        assert_eq!(
+            raised, 1,
+            "40 帧持续运动只许 1 次 AlarmRaised（I8 去重），得 {raised}"
+        );
+
+        // 静止：背景已收敛白，白帧无运动框 → 空帧喂 tracker → 失配超限 → AlarmCleared
+        for _ in 0..40 {
+            write_frame(&slot, 255);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        std::thread::sleep(Duration::from_millis(60));
+        let mut cleared = 0;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, Event::AlarmCleared { .. }) {
+                cleared += 1;
+            }
+        }
+
+        bridge.control.stop.store(true, Ordering::Relaxed);
+        let _ = t.join();
+
+        assert!(
+            cleared >= 1,
+            "静止后轨迹须结束并 AlarmCleared（active 有界），得 {cleared}"
+        );
     }
 }
