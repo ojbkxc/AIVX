@@ -250,11 +250,13 @@ impl CameraManager {
             // T3 录像线程（I4 物理隔离；mode=off 不拉起——对齐用户配置：
             // 固定相机不录像、移动相机 always 录。motion 联动启停随 P8b 接
             // 运动门控信号——当前 motion 语义先按 always 落（宁多录不漏录）。
+            // 录像也走子码流 URL：T1 检测独占 stream1 会话（摄像头同 URL 仅容
+            // 1 并发），T3 再拉 stream1 必失败——线上实测 656 段全 0 字节。
             let record_mode = cam.record.mode();
             if record_mode != "off" {
                 let rcfg = RecordCfg {
                     device_id: device_id.clone(),
-                    rtsp_url: input.path.clone(),
+                    rtsp_url: sub_stream_url(&input.path),
                     base_dir: record_dir.clone(),
                     segment_secs: 600,
                     ffmpeg: "ffmpeg".into(),
