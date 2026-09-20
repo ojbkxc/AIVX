@@ -123,12 +123,15 @@ async fn stream_preview(
     Path(id): Path<String>,
     State(s): State<ApiState>,
 ) -> impl IntoResponse {
+    // 预览用子码流（rtsp_sub）：T1 检测已独占主码流 RTSP 会话——摄像头
+    // 同 URL 仅容 1 并发连接（线上实测：同 URL 第二路 ffmpeg 直接
+    // "Invalid data found"）。I4 主/子分离即为此。
     let rtsp = s
         .cameras
         .cameras
         .iter()
         .find(|c| c.device.id == id)
-        .and_then(|c| c.device.rtsp_main.clone());
+        .and_then(|c| c.device.rtsp_sub.clone());
     let sub = s.preview.subscribe(&id, rtsp.as_deref()).await;
     let hub = Arc::clone(&s.preview);
     let cam_missing = sub.is_none();

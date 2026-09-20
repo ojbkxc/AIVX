@@ -127,6 +127,12 @@ impl RecordYaml {
     }
 }
 
+/// 主码流 URL → 子码流 URL。TP-LINK：`stream1&channel=N` → `stream2&channel=N`
+/// （已实测两台机器四路子码流全部 h264 640x360 可拉）。已是 stream2 的原样返回。
+fn sub_stream_url(main: &str) -> String {
+    main.replacen("stream1", "stream2", 1)
+}
+
 // ── 运行时编排 ────────────────────────────────────────────────
 
 /// 一路已启动的摄像头线程束句柄。
@@ -266,7 +272,10 @@ impl CameraManager {
                     access_type: AccessType::Rtsp,
                     onvif_url: None,
                     rtsp_main: Some(input.path.clone()),
-                    rtsp_sub: Some(input.path.clone()),
+                    // 子码流：TP-LINK 约定 stream1→stream2。T1 检测已独占
+                    // stream1 的 RTSP 会话（摄像头同 URL 仅容 1 并发），预览/
+                    // 第二消费者必须走独立 URL（I4 主/子分离）。
+                    rtsp_sub: Some(sub_stream_url(&input.path)),
                     manufacturer: Some("TP-LINK".into()),
                     model: None,
                     capabilities: Capabilities {
