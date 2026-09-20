@@ -40,6 +40,8 @@ impl RecordCfg {
             "tcp".into(),
             "-i".into(),
             self.rtsp_url.clone(),
+            "-an".into(), // 音频轨 copy 进 mp4 segment 会初始化失败（TP-LINK
+            // 子码流带 aac/pcm；NVR 录像无音频需求）
             "-c".into(),
             "copy".into(), // 零转码（I4：CPU ≈ 0）
             "-f".into(),
