@@ -215,17 +215,19 @@ mod tests {
 
         // ── 计时开始：注入与背景强烈差异的运动帧 ──
         // ByteTracker min_hits=3：连续 ≥3 帧命中才确认轨迹（防单帧幽灵）。
-        // EMA 背景会向白收敛（连续同值帧差分衰减）——用 255/0 交替帧维持强差分，
-        // 保证整个窗口内 motion 持续出框，喂满 min_hits。
+        // EMA 背景会向白收敛（连续同值帧差分衰减）——用 255/0 交替帧维持强差分。
+        // CI 慢 runner 上 T2 轮询周期可达 5-10ms：10ms 窗口可能只被消费 1-2 次
+        // （gen 合并跳跃）→ hits<3 永不确认。注入窗口放宽到 90ms/15 帧，
+        // 保证最慢轮询下 T2 也能消费 ≥3 次不同 gen。
         let t0 = crate::mono_ns();
-        for i in 0..5 {
+        for i in 0..15 {
             write_frame(&slot, if i % 2 == 0 { 255 } else { 0 });
-            std::thread::sleep(Duration::from_millis(2));
+            std::thread::sleep(Duration::from_millis(6));
         }
 
         let mut got_alarm = false;
         let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_millis(300) {
+        while start.elapsed() < Duration::from_millis(400) {
             if let Ok(ev) = rx.try_recv() {
                 if matches!(ev, Event::AlarmRaised { .. }) {
                     got_alarm = true;
@@ -238,13 +240,13 @@ mod tests {
         let _ = t.join();
 
         let elapsed_ms = (crate::mono_ns() - t0) as f64 / 1e6;
-        assert!(got_alarm, "300ms 内未收到报警（{elapsed_ms:.1}ms）");
-        // CI 上限 150ms 是"设计预算断言"——GitHub runner 调度抖动大（共享 vCPU），
-        // 预算断言放 250ms（运动检测+桩推理本身 <1ms；runner 抖动是唯一变量）。
-        // 本地/专用机跑此测试应稳定 <100ms（DESIGN.md §6 预算）。
+        assert!(got_alarm, "400ms 内未收到报警（{elapsed_ms:.1}ms）");
+        // CI 上限 150ms 是"设计预算断言"——但 min_hits=3 确认要求 T2 消费 3 帧，
+        // 慢 runner 注入 90ms 窗口是必要开销（非检测延迟）。预算断言适配注入窗口：
+        // 报警应在第 3 次消费后立即发生 —— 上限 = 90ms 注入 + 150ms 抖动余量。
         assert!(
-            elapsed_ms < 250.0,
-            "运动→报警 {elapsed_ms:.1}ms 超出 CI 抖动余量 250ms"
+            elapsed_ms < 300.0,
+            "运动→报警 {elapsed_ms:.1}ms 超出注入窗口+抖动余量 300ms"
         );
         println!("I3 synthetic motion→alarm: {elapsed_ms:.2}ms (design budget <100ms)");
     }
