@@ -127,8 +127,14 @@ pub fn extract_codec(init: &[u8]) -> Option<String> {
     let entries = &stsd[8..];
     for fourcc in [b"avc1", b"hvc1", b"hev1"] {
         if let Some(entry) = find_box(entries, fourcc) {
+            // sample entry 前 8 字节是 prelude（6 保留 + 2 data_ref_index），
+            // 编码配置 box 是其子 box——跳过 prelude 再扫。
+            if entry.len() < 8 {
+                continue;
+            }
+            let children = &entry[8..];
             if fourcc == b"avc1" {
-                if let Some(avcc) = find_box(entry, b"avcC") {
+                if let Some(avcc) = find_box(children, b"avcC") {
                     if avcc.len() >= 5 {
                         // avcC: [0][profile][compat][level]...
                         let p = avcc[1];
@@ -137,19 +143,17 @@ pub fn extract_codec(init: &[u8]) -> Option<String> {
                         return Some(format!("avc1.{:02X}{:02X}{:02X}", p, c, l));
                     }
                 }
-            } else {
-                if let Some(hvcc) = find_box(entry, b"hvcC") {
-                    if hvcc.len() >= 13 {
-                        // hvcC: [0][profileIdc][compatFlags ×4]…[12]=levelIdc
-                        let profile = hvcc[1];
-                        let level = hvcc[12];
-                        return Some(format!(
-                            "{}.{:x}.L{:X}.B0",
-                            String::from_utf8_lossy(fourcc),
-                            profile,
-                            level
-                        ));
-                    }
+            } else if let Some(hvcc) = find_box(children, b"hvcC") {
+                if hvcc.len() >= 13 {
+                    // hvcC: [0][profileIdc][compatFlags ×4]…[12]=levelIdc
+                    let profile = hvcc[1];
+                    let level = hvcc[12];
+                    return Some(format!(
+                        "{}.{:x}.L{:X}.B0",
+                        String::from_utf8_lossy(fourcc),
+                        profile,
+                        level
+                    ));
                 }
             }
         }
