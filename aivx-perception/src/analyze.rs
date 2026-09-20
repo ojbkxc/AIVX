@@ -164,7 +164,8 @@ mod tests {
     }
 
     /// **I3 合成流端到端断言**（DESIGN.md §6/§19）：
-    /// 校准期过后，静止→运动→AlarmRaised ≤ 150ms（CI 上限，含抖动余量）。
+    /// 校准期过后，静止→运动→AlarmRaised（事件同步：轨迹确认即报，
+    /// elapsed 即真实检测延迟；预算断言 300ms = 设计预算 + 慢 runner 轮询余量）。
     ///
     /// 校准期（ADR-023）单独断言：校准内注入运动帧不得报警（宁漏报不误报）。
     #[test]
@@ -206,11 +207,19 @@ mod tests {
         );
 
         // ── 注静止灰帧重建背景（EMA 从白收敛到灰需要多帧）──
-        for _ in 0..40 {
+        // 关键耦合：EMA 收敛按 **T2 消费的帧数**计，不是注入帧数——慢 runner
+        // 上 T2 轮询周期 5-10ms，注入 @2ms 会被 gen 合并（80 帧可能只被消费
+        // ~20 次 = 64% 收敛，bg≈133，灰 64 差 69 仍出框）。必须放慢注入到
+        // @10ms/帧，保证 T2 逐帧消费：100 次 ×(1-0.05) → 1-0.95^100≈99.4%
+        // 收敛，bg≈灰±3 差 < 阈值 25 → 空帧 ≥max_missed=8，旧轨迹才死。
+        // 为什么必须先杀死旧轨迹：重建段的运动框（灰 vs 白背景差 191）会让
+        // 轨迹确认并持续续命——MotionStub 恒返同框，活轨迹 IoU=1 永远匹配
+        // 新框 → 永不 missed → 计时段同轨迹不重报（I8 去重）→ 测试超时。
+        for _ in 0..100 {
             write_frame(&slot, 64);
-            std::thread::sleep(Duration::from_millis(2));
+            std::thread::sleep(Duration::from_millis(10));
         }
-        std::thread::sleep(Duration::from_millis(40));
+        std::thread::sleep(Duration::from_millis(100));
         while rx.try_recv().is_ok() {} // 清空一切残留（如有）
 
         // ── 计时开始：注入与背景强烈差异的运动帧 ──
