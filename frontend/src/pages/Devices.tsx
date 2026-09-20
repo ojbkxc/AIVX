@@ -28,7 +28,9 @@ export function DevicesPage({ api }: { api: ApiClient }) {
 
   return (
     <div className="devices" data-testid="devices-page">
-      <h1>设备管理</h1>
+      <div className="page-head">
+        <h1>设备管理</h1>
+      </div>
       {devices.length === 0 && <p>暂无设备。点击"发现"扫描 ONVIF 摄像头。</p>}
       <ul className="device-list">
         {devices.map((d) => (

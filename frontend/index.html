@@ -4,6 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AIVX — AI 视频监控</title>
+    <script>
+      // 防主题闪白：首屏内联解析 data-theme（与 lib/theme.ts 同逻辑，NVR 大屏常挂场景 FOUC 刺眼）
+      (function () {
+        try {
+          var mode = localStorage.getItem('theme');
+          if (mode !== 'light' && mode !== 'dark') mode = 'system';
+          var dark = mode === 'dark' || (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

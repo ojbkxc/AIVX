@@ -11,23 +11,31 @@ import { RecordingsPage } from './pages/Recordings';
 import { AgentPage } from './pages/Agent';
 import { Sidebar } from './components/Sidebar';
 import { RealApiClient } from './api';
+import { initTheme } from './lib/theme';
+import './App.css';
+import './aivx.css';
+
+// 初始化主题（system/light/dark 三态，system 跟随系统明暗；防 FOUC）
+initTheme();
 
 const api = new RealApiClient();
 
 function App() {
   return (
-    <div className="app">
+    <div className="app-container">
       <Sidebar />
-      <main className="app-main">
-        <Routes>
-          <Route path="/" element={<LivePage api={api} />} />
-          <Route path="/live" element={<LivePage api={api} />} />
-          <Route path="/devices" element={<DevicesPage api={api} />} />
-          <Route path="/rules" element={<RulesPage api={api} />} />
-          <Route path="/alarms" element={<AlarmsPage api={api} />} />
-          <Route path="/recordings" element={<RecordingsPage api={api} />} />
-          <Route path="/agent" element={<AgentPage />} />
-        </Routes>
+      <main className="main-content">
+        <div className="page-fade-enter">
+          <Routes>
+            <Route path="/" element={<LivePage api={api} />} />
+            <Route path="/live" element={<LivePage api={api} />} />
+            <Route path="/devices" element={<DevicesPage api={api} />} />
+            <Route path="/rules" element={<RulesPage api={api} />} />
+            <Route path="/alarms" element={<AlarmsPage api={api} />} />
+            <Route path="/recordings" element={<RecordingsPage api={api} />} />
+            <Route path="/agent" element={<AgentPage />} />
+          </Routes>
+        </div>
       </main>
     </div>
   );

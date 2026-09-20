@@ -1,0 +1,589 @@
+/* AIVX 域样式 — 六页既有类名适配 AIGX 设计令牌。
+ * 全部色值/圆角/阴影走 App.css 的 CSS 变量，暗色主题自动适配。
+ * 页面 tsx 不改类名，适配全在此文件完成。 */
+
+/* ── 页头（六页共用） ─────────────────────────────────── */
+.page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.page-head h1 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.version-tag {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: 'JetBrainsMono', 'SF Mono', 'Consolas', monospace;
+  background: rgba(130, 130, 130, 0.15);
+  color: var(--text-muted);
+}
+
+/* ── 状态提示条 / 提示文字 ─────────────────────────────── */
+.status {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  background: var(--section-item-bg);
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+
+.status.error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  word-break: break-all;
+}
+
+.hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
+/* ── 视频墙（实时预览页） ─────────────────────────────── */
+.stream-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 16px;
+}
+
+.stream-card {
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--card-shadow);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.stream-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+/* 视频位：16:9 纯黑底，P8e 接 fMP4 播放器后仍作为容器 */
+.stream-view {
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 12px 12px 0 0;
+  overflow: hidden;
+}
+
+.stream-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, #1a1a1a 0%, #000 100%);
+}
+
+.stream-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.5);
+  letter-spacing: 0.02em;
+}
+
+.stream-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 五态徽章：软底 pill（badge-success/info/warning/neutral 同族色） */
+.state-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.state-badge.ok {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--mint);
+}
+
+.state-badge.connecting {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--cyan);
+}
+
+.state-badge.reconnecting,
+.state-badge.degraded {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--amber);
+}
+
+.state-badge.stopped {
+  background: rgba(130, 130, 130, 0.15);
+  color: var(--text-muted);
+}
+
+/* 录像中：红点呼吸 */
+.rec-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--coral);
+}
+
+.rec-badge::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--coral);
+  animation: rec-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rec-badge::before {
+    animation: none;
+  }
+}
+
+/* ── 报警中心统计卡 ─────────────────────────────────── */
+.alarm-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+  grid-auto-rows: 1fr;
+}
+
+/* .stat-card/.stat-value 直接继承 App.css 同名类；此处补齐 AIVX 布局 */
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* ── 设备管理页 ─────────────────────────────────────── */
+.device-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.device-item {
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 16px 20px;
+  box-shadow: var(--card-shadow);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.device-item:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+.device-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-main);
+}
+
+.device-id {
+  font-family: 'JetBrainsMono', 'SF Mono', 'Consolas', monospace;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  padding: 2px 8px;
+  border-radius: 6px;
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+
+.device-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* 接入方式徽章：rtsp→info 蓝、onvif/gb28181→neutral 灰 */
+.badge.rtsp {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--cyan);
+}
+
+.badge.onvif,
+.badge.gb28181 {
+  background: rgba(130, 130, 130, 0.15);
+  color: var(--text-muted);
+}
+
+/* 能力徽章：支持=mint、不支持=neutral */
+.badge.supported {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--mint);
+}
+
+.badge.unsupported {
+  background: rgba(130, 130, 130, 0.15);
+  color: var(--text-faint);
+}
+
+.capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.device-streams {
+  display: flex;
+  gap: 8px;
+}
+
+.device-streams .stream {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--section-item-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+}
+
+/* ── 布控配置页 ─────────────────────────────────────── */
+.rules-model pre {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--code-color);
+  overflow-x: auto;
+  margin-bottom: 14px;
+}
+
+.rules-device-list {
+  list-style: none;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ── 录像回放页 ─────────────────────────────────────── */
+.rec-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.rec-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 240px;
+  flex-shrink: 0;
+  padding: 8px;
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: var(--card-shadow);
+  position: sticky;
+  top: 16px;
+}
+
+.rec-device {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  text-align: left;
+}
+
+.rec-device:hover {
+  background: var(--sidebar-menu-hover);
+  color: var(--text-main);
+}
+
+.rec-device.active {
+  color: var(--text-main);
+  background: rgba(47, 111, 237, 0.12);
+  box-shadow: inset 2px 0 0 var(--accent-color);
+}
+
+.rec-device.no-rec {
+  opacity: 0.55;
+}
+
+.rec-mode {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+
+.rec-list {
+  flex: 1;
+  min-width: 0;
+}
+
+.rec-list ul {
+  list-style: none;
+}
+
+.rec-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 13px;
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-list li:last-child {
+  border-bottom: none;
+}
+
+.rec-list li:hover {
+  background: var(--section-item-bg);
+}
+
+/* ── Agent 运维页 ───────────────────────────────────── */
+.agent-layout {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.agent-chat {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 助手：无边框纯文本（open-webui 观感）；用户：暖灰气泡 */
+.msg {
+  max-width: 82%;
+  font-size: 15px;
+  line-height: 1.75;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.msg.assistant {
+  color: var(--text-main);
+}
+
+.msg.user {
+  align-self: flex-end;
+  background: rgba(0, 0, 0, 0.045);
+  border-radius: 20px;
+  border-top-right-radius: 6px;
+  padding: 10px 16px;
+  line-height: 1.6;
+}
+
+:root[data-theme='dark'] .msg.user {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.agent-tools {
+  flex-shrink: 0;
+  width: 340px;
+  background-color: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: var(--card-shadow);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.agent-tools h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.agent-tools ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agent-tools li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-tools code {
+  align-self: flex-start;
+  font-size: 11.5px;
+}
+
+.agent-tools p {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.risk {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.risk-readonly {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--cyan);
+}
+
+.risk-low {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--amber);
+}
+
+.risk-high {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--coral);
+}
+
+/* ── 侧栏底部主题切换行（AIGX 用户区的无登录替代） ───── */
+.sidebar-footer {
+  padding-bottom: 2px;
+}
+
+.theme-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px 6px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  text-align: left;
+}
+
+.theme-toggle-btn:hover {
+  background: var(--sidebar-menu-hover);
+  color: var(--text-main);
+}
+
+.sidebar-aside-collapsed .theme-toggle-btn {
+  justify-content: center;
+  padding: 6px 0;
+}
+
+.sidebar-aside-collapsed .theme-toggle-btn span {
+  display: none;
+}
+
+/* ── 响应式（≤768px，App.css 之外补充域样式） ────────── */
+@media (max-width: 768px) {
+  .stream-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .rec-layout {
+    flex-direction: column;
+  }
+
+  .rec-device-list {
+    width: 100%;
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .rec-device {
+    width: auto;
+  }
+
+  .agent-layout {
+    flex-direction: column;
+  }
+
+  .agent-tools {
+    width: 100%;
+    max-height: none;
+  }
+
+  .msg {
+    max-width: 90%;
+  }
+}
