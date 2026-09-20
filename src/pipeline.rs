@@ -203,7 +203,11 @@ impl Projector {
                 ..
             } => {
                 self.active_alarms.insert(alarm_id.clone(), seq);
-                self.projections.alarms.lock().unwrap().insert(alarm_id.clone(), ());
+                self.projections
+                    .alarms
+                    .lock()
+                    .unwrap()
+                    .insert(alarm_id.clone(), ());
                 self.projections.alarm_rows.lock().unwrap().push(AlarmRow {
                     alarm_id: alarm_id.clone(),
                     device_id: device_id.clone(),
@@ -235,13 +239,17 @@ impl Projector {
                 ..
             } => {
                 // start_mono_ns 字段实为 mtime 墙钟纳秒（record.rs 历史误名）。
-                self.projections.recordings.lock().unwrap().push(RecordingRow {
-                    id: format!("{device_id}-{start_mono_ns}"),
-                    device_id: device_id.clone(),
-                    file_path: file_path.clone(),
-                    start_ts: (*start_mono_ns / 1_000_000_000) as i64,
-                    duration_secs: 0.0, // API 层按段序差分补
-                });
+                self.projections
+                    .recordings
+                    .lock()
+                    .unwrap()
+                    .push(RecordingRow {
+                        id: format!("{device_id}-{start_mono_ns}"),
+                        device_id: device_id.clone(),
+                        file_path: file_path.clone(),
+                        start_ts: (*start_mono_ns / 1_000_000_000) as i64,
+                        duration_secs: 0.0, // API 层按段序差分补
+                    });
             }
             _ => {}
         }

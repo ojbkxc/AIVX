@@ -67,6 +67,16 @@ struct ApiState {
     db: Arc<tokio::sync::Mutex<DbWriter>>,
     cameras: Arc<CameraManager>,
     preview: Arc<PreviewHub>,
+    agent: Arc<AgentState>,
+}
+
+/// Agent 运维会话（P8e：单会话内存存根；SessionStore 持消息历史）。
+struct AgentState {
+    ctx: aivx::agent::ActionContext,
+    sessions: aivx::agent::session::SessionStore,
+    approvals: aivx::agent::approval::AgentApprovals,
+    /// LLM 未配置（env 缺失）标志：UI 提示 + 桩对话仍可用。
+    llm_configured: bool,
 }
 
 async fn list_devices(State(s): State<ApiState>) -> Json<Vec<Device>> {
@@ -91,17 +101,14 @@ async fn list_recordings(State(s): State<ApiState>, Path(id): Path<String>) -> i
         if rows[i].duration_secs == 0.0 {
             // 差分：下段 start - 本段 start；末段按文件 mtime 与 start 的差
             let start = rows[i].start_ts;
-            let end = rows
-                .get(i + 1)
-                .map(|r| r.start_ts)
-                .unwrap_or_else(|| {
-                    std::fs::metadata(&rows[i].file_path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(start)
-                });
+            let end = rows.get(i + 1).map(|r| r.start_ts).unwrap_or_else(|| {
+                std::fs::metadata(&rows[i].file_path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(start)
+            });
             let d = (end - start).max(0);
             rows[i].duration_secs = if d == 0 { 0.0 } else { d.min(seg) as f64 };
         }
@@ -169,6 +176,134 @@ async fn preview_session(
     }
 }
 
+/// Agent 对话（P8e）：POST /api/agent/chat {message}。
+/// 单会话（"main"）内存存根；runner 同步循环包 spawn_blocking（LLM 是
+/// reqwest blocking）；Observer 角色 + 审批超时 0（高危必拒——无审批 UI
+/// 时最安全的默认）。一次性返回完整事件流（不做 SSE）。
+async fn agent_chat(
+    State(s): State<ApiState>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Some(message) = req
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+    else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "missing message"})),
+        );
+    };
+    let session_id = "main";
+    let agent = Arc::clone(&s.agent);
+    let res = tokio::task::spawn_blocking(move || {
+        let agent = agent;
+        agent.sessions.create(
+            session_id,
+            "新会话",
+            aivx::agent::session::AgentRole::Observer,
+        );
+        let history = agent.sessions.messages(session_id);
+        let mut convo: Vec<aivx::agent::llm::ChatMessage> = history
+            .iter()
+            .filter(|m| m.role == "user" || m.role == "assistant")
+            .map(|m| aivx::agent::llm::ChatMessage {
+                role: if m.role == "user" {
+                    aivx::agent::llm::Role::User
+                } else {
+                    aivx::agent::llm::Role::Assistant
+                },
+                content: m.content.clone(),
+            })
+            .collect();
+        convo.push(aivx::agent::llm::user_message(message.clone()));
+        let provider: Box<dyn aivx::agent::llm::ChatProvider> =
+            match aivx::agent::llm::OpenAiChatProvider::from_env() {
+                Some(p) => Box::new(p),
+                None => Box::new(aivx::agent::llm::StubProvider),
+            };
+        let events = aivx::agent::runner::run(
+            provider.as_ref(),
+            &agent.approvals,
+            &agent.ctx,
+            session_id,
+            aivx::agent::session::AgentRole::Observer,
+            convo,
+            8,
+            0,
+        );
+        // 会话留痕：user + final 文本（工具轮不进历史——上下文预算）
+        agent.sessions.append_message(
+            session_id,
+            aivx::agent::session::AgentMessage {
+                role: "user".into(),
+                content: message.clone(),
+                tool_calls: None,
+                tool_result: None,
+            },
+        );
+        let final_text = events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                aivx::agent::runner::AgentEvent::Final { content } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "（本轮未产生答复）".into());
+        agent.sessions.rename_if_default(session_id, &message);
+        agent.sessions.append_message(
+            session_id,
+            aivx::agent::session::AgentMessage {
+                role: "assistant".into(),
+                content: final_text,
+                tool_calls: None,
+                tool_result: None,
+            },
+        );
+        (events, agent.llm_configured)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        (
+            vec![aivx::agent::runner::AgentEvent::Error {
+                message: "agent task panic".into(),
+            }],
+            false,
+        )
+    });
+    let (events, llm_configured) = res;
+    let items: Vec<serde_json::Value> = events
+        .iter()
+        .map(|e| match e {
+            aivx::agent::runner::AgentEvent::Thinking { turn } => {
+                serde_json::json!({"type": "thinking", "turn": turn})
+            }
+            aivx::agent::runner::AgentEvent::ToolCall { name, arguments } => {
+                serde_json::json!({"type": "tool_call", "name": name, "arguments": arguments})
+            }
+            aivx::agent::runner::AgentEvent::ToolResult { name, ok, text } => {
+                serde_json::json!({"type": "tool_result", "name": name, "ok": ok, "text": text})
+            }
+            aivx::agent::runner::AgentEvent::ApprovalRequest { .. } => {
+                serde_json::json!({"type": "approval_request"})
+            }
+            aivx::agent::runner::AgentEvent::ApprovalResolved { name, approved } => {
+                serde_json::json!({"type": "approval_resolved", "name": name, "approved": approved})
+            }
+            aivx::agent::runner::AgentEvent::Final { content } => {
+                serde_json::json!({"type": "final", "content": content})
+            }
+            aivx::agent::runner::AgentEvent::Error { message } => {
+                serde_json::json!({"type": "error", "message": message})
+            }
+        })
+        .collect();
+    Json(serde_json::json!({
+        "events": items,
+        "llm_configured": llm_configured,
+    }))
+}
+
 async fn healthz(State(s): State<ApiState>) -> impl IntoResponse {
     // 每路流状态（数据面 AtomicU64 直读——DESIGN.md §14）
     let streams: Vec<serde_json::Value> = s
@@ -232,6 +367,17 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         cameras: cameras.clone(),
         preview: Arc::new(PreviewHub::new("ffmpeg".into())),
+        agent: Arc::new(AgentState {
+            ctx: aivx::agent::ActionContext::with_data(Arc::new(
+                aivx::agent::live_data::LiveDataSource::new(
+                    Arc::clone(&cameras),
+                    Arc::clone(&projections),
+                ),
+            )),
+            sessions: aivx::agent::session::SessionStore::new(),
+            approvals: aivx::agent::approval::AgentApprovals::default(),
+            llm_configured: aivx::agent::llm::OpenAiChatProvider::from_env().is_some(),
+        }),
     };
     smoke_event_chain(&state).await;
     assert!(
@@ -295,6 +441,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/healthz", get(healthz))
         .route("/api/stream/:id", get(stream_preview))
         .route("/api/recordings/:id", get(list_recordings))
+        .route("/api/agent/chat", axum::routing::post(agent_chat))
         .with_state(state)
         // 录像回放：ServeDir 限在录像根（防穿越 + Range/seek 免费）
         .nest_service(

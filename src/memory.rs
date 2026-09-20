@@ -120,7 +120,11 @@ impl MemProjections {
     /// 最近报警（倒序，/api/alarms items 用）。
     pub fn recent_alarms(&self, limit: usize) -> Vec<AlarmRow> {
         let mut rows = self.alarm_rows.lock().unwrap().clone();
-        rows.sort_by(|a, b| b.raised_ts.cmp(&a.raised_ts).then(b.alarm_id.cmp(&a.alarm_id)));
+        rows.sort_by(|a, b| {
+            b.raised_ts
+                .cmp(&a.raised_ts)
+                .then(b.alarm_id.cmp(&a.alarm_id))
+        });
         rows.truncate(limit);
         rows
     }

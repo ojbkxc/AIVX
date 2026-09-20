@@ -70,7 +70,7 @@ impl Fmp4Parser {
         if box_type == "moof" {
             self.saw_moof = true;
         }
-        self.media_boxes.push((box_type, payload));
+        self.media_boxes.push((box_type.clone(), payload));
         if box_type == "mdat" && self.saw_moof {
             let mut data = Vec::new();
             for (_, p) in &self.media_boxes {
@@ -160,7 +160,7 @@ pub fn extract_codec(init: &[u8]) -> Option<String> {
 }
 
 /// 在容器 payload 里找一层子 box，返回其 payload。
-fn find_box(payload: &[u8], ty: &[u8; 4]) -> Option<&[u8]> {
+fn find_box<'a>(payload: &'a [u8], ty: &[u8; 4]) -> Option<&'a [u8]> {
     let mut off = 0usize;
     while off + 8 <= payload.len() {
         let size = u32::from_be_bytes(payload[off..off + 4].try_into().ok()?) as usize;
@@ -176,7 +176,7 @@ fn find_box(payload: &[u8], ty: &[u8; 4]) -> Option<&[u8]> {
 }
 
 /// 递归深搜一层容器树（moov→trak→…→stsd）。
-fn find_box_deep(payload: &[u8], ty: &[u8; 4]) -> Option<&[u8]> {
+fn find_box_deep<'a>(payload: &'a [u8], ty: &[u8; 4]) -> Option<&'a [u8]> {
     let mut off = 0usize;
     while off + 8 <= payload.len() {
         let size = u32::from_be_bytes(payload[off..off + 4].try_into().ok()?) as usize;
@@ -219,17 +219,39 @@ mod tests {
 
     /// 构造带 avcC/hvcC 的完整 init（ftyp + moov[trak[mdia[minf[stbl[stsd[entry[cc]]]]]]]）。
     /// avcC 的 profile/compat/level 标在 [1][2][3] 位置；hvcC 的 level 在 [12]。
-    fn synthetic_init(profile: u8, compat: u8, level: u8, fourcc: &str, cc_fourcc: &str) -> Vec<u8> {
+    fn synthetic_init(
+        profile: u8,
+        compat: u8,
+        level: u8,
+        fourcc: &str,
+        cc_fourcc: &str,
+    ) -> Vec<u8> {
         let avcc = box_(
             cc_fourcc,
             &[
-                0x01, profile, compat, level, 0xff, 0xe1, 0x00, 0x08, 0x67, profile, compat,
-                level, 0xde, 0xad,
+                0x01, profile, compat, level, 0xff, 0xe1, 0x00, 0x08, 0x67, profile, compat, level,
+                0xde, 0xad,
             ],
         );
         // sample entry：前部固定占位字节 + 编码配置 box（解析器只找 cc box）
-        let entry = box_(fourcc, &[0u8; 6, 0xff].iter().chain(avcc.iter()).cloned().collect::<Vec<u8>>().as_slice());
-        let stsd = box_("stsd", &[0, 0, 0, 0, 0, 0, 0, 1].iter().chain(entry.iter()).cloned().collect::<Vec<u8>>().as_slice());
+        let mut entry_body = [0u8; 8];
+        entry_body[6] = 0xff;
+        let entry = box_(
+            fourcc,
+            &entry_body
+                .iter()
+                .chain(avcc.iter())
+                .cloned()
+                .collect::<Vec<u8>>(),
+        );
+        let stsd = box_(
+            "stsd",
+            &[0, 0, 0, 0, 0, 0, 0, 1]
+                .iter()
+                .chain(entry.iter())
+                .cloned()
+                .collect::<Vec<u8>>(),
+        );
         let stbl = box_("stbl", &stsd);
         let minf = box_("minf", &stbl);
         let mdia = box_("mdia", &minf);
@@ -265,7 +287,11 @@ mod tests {
     fn partial_box_across_feeds() {
         let mut p = Fmp4Parser::new();
         let init = synthetic_init(0x42, 0xC0, 0x1E, "avc1", "avcC");
-        let media = box_("moof", &[1]).iter().chain(box_("mdat", &[2]).iter()).cloned().collect::<Vec<u8>>();
+        let media = box_("moof", &[1])
+            .iter()
+            .chain(box_("mdat", &[2]).iter())
+            .cloned()
+            .collect::<Vec<u8>>();
         let mut full = init.clone();
         full.extend_from_slice(&media);
         // 在 media 正中间劈开
@@ -302,7 +328,9 @@ mod tests {
         let mut p = Fmp4Parser::new();
         let chunks = p.feed(&init);
         match &chunks[0] {
-            Fmp4Chunk::Init { codec, .. } => assert!(codec_is_hevc(codec), "hvc1 必须判为 HEVC: {codec}"),
+            Fmp4Chunk::Init { codec, .. } => {
+                assert!(codec_is_hevc(codec), "hvc1 必须判为 HEVC: {codec}")
+            }
             _ => panic!("应有 init"),
         }
         assert!(!codec_is_hevc("avc1.42C01E"));

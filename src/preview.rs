@@ -70,7 +70,11 @@ impl PreviewStream {
     /// 新订阅者：缓存引用 + 计数 0→1 拉起 ffmpeg。返回接收端 + 秒开缓存。
     pub async fn subscribe(
         self: &Arc<Self>,
-    ) -> (broadcast::Receiver<Arc<Vec<u8>>>, Option<Arc<Vec<u8>>>, Option<Arc<Vec<u8>>>) {
+    ) -> (
+        broadcast::Receiver<Arc<Vec<u8>>>,
+        Option<Arc<Vec<u8>>>,
+        Option<Arc<Vec<u8>>>,
+    ) {
         let mut lc = self.lifecycle.lock().await;
         lc.subscribers += 1;
         if lc.subscribers == 1 {
@@ -205,14 +209,22 @@ impl PreviewStream {
     /// superfast CRF23（DESIGN.md §8）。不 scale——监看不降分辨率（AGENTS.md Never-9）。
     fn ffmpeg_args(rtsp_url: &str, transcode: bool) -> Vec<String> {
         let mut args: Vec<String> = [
-            "-rtsp_transport", "tcp",
-            "-fflags", "nobuffer+genpts+discardcorrupt",
-            "-flags", "low_delay",
-            "-max_delay", "0",
-            "-reorder_queue_size", "0",
-            "-thread_queue_size", "1",
-            "-analyzeduration", "100000",
-            "-probesize", "32768",
+            "-rtsp_transport",
+            "tcp",
+            "-fflags",
+            "nobuffer+genpts+discardcorrupt",
+            "-flags",
+            "low_delay",
+            "-max_delay",
+            "0",
+            "-reorder_queue_size",
+            "0",
+            "-thread_queue_size",
+            "1",
+            "-analyzeduration",
+            "100000",
+            "-probesize",
+            "32768",
             "-i",
         ]
         .iter()
@@ -221,24 +233,42 @@ impl PreviewStream {
         args.push(rtsp_url.to_string());
         args.push("-an".into());
         if transcode {
-            args.extend([
-                "-c:v", "libx264", "-preset", "superfast", "-tune", "zerolatency",
-                "-crf", "23", "-g", "30", "-pix_fmt", "yuv420p",
-            ]
-            .iter()
-            .map(|s| s.to_string()));
+            args.extend(
+                [
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "superfast",
+                    "-tune",
+                    "zerolatency",
+                    "-crf",
+                    "23",
+                    "-g",
+                    "30",
+                    "-pix_fmt",
+                    "yuv420p",
+                ]
+                .iter()
+                .map(|s| s.to_string()),
+            );
         } else {
             args.extend(["-c", "copy"].iter().map(|s| s.to_string()));
         }
-        args.extend([
-            "-f", "mp4",
-            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-            "-frag_duration", "1000000", // 1s 一段（timescale 1000）
-            "-flush_packets", "1",
-            "pipe:1",
-        ]
-        .iter()
-        .map(|s| s.to_string()));
+        args.extend(
+            [
+                "-f",
+                "mp4",
+                "-movflags",
+                "frag_keyframe+empty_moov+default_base_moof",
+                "-frag_duration",
+                "1000000", // 1s 一段（timescale 1000）
+                "-flush_packets",
+                "1",
+                "pipe:1",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
         args
     }
 }
@@ -288,13 +318,18 @@ impl PreviewHub {
         &self,
         id: &str,
         rtsp_url: Option<&str>,
-    ) -> Option<(broadcast::Receiver<Arc<Vec<u8>>>, Option<Arc<Vec<u8>>>, Option<Arc<Vec<u8>>>)> {
+    ) -> Option<(
+        broadcast::Receiver<Arc<Vec<u8>>>,
+        Option<Arc<Vec<u8>>>,
+        Option<Arc<Vec<u8>>>,
+    )> {
         let rtsp = rtsp_url?.to_string();
         let mut map = self.streams.lock().await;
         let stream = map
             .entry(id.to_string())
-            .or_insert_with(|| Arc::new(PreviewStream::new(id.into(), rtsp, self.ffmpeg.clone())))
+            .or_insert_with(|| PreviewStream::new(id.into(), rtsp.clone(), self.ffmpeg.clone()))
             .clone();
+        drop(map);
         Some(stream.subscribe().await)
     }
 

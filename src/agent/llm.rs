@@ -90,6 +90,102 @@ pub fn openai_tools(specs: &[crate::agent::tools::ToolSpec]) -> Vec<Value> {
         .collect()
 }
 
+/// 真实 OpenAI 兼容 chat provider（P8e）：POST {api_url}/chat/completions。
+/// 凭据从 env 读（AIVX_LLM_URL / AIVX_LLM_KEY / AIVX_LLM_MODEL——不入库）；
+/// 走 AIGX 网关渠道（OpenAI 兼容）。reqwest blocking：runner 是同步循环，
+/// HTTP 层用 spawn_blocking 包裹（同 forwarder 模式）。
+pub struct OpenAiChatProvider {
+    api_url: String,
+    api_key: String,
+    model: String,
+    http: reqwest::blocking::Client,
+}
+
+impl OpenAiChatProvider {
+    /// env 未配全时返回 None（调用方回落 StubProvider）。
+    pub fn from_env() -> Option<Self> {
+        let api_url = std::env::var("AIVX_LLM_URL").ok()?;
+        let api_key = std::env::var("AIVX_LLM_KEY").ok()?;
+        let model = std::env::var("AIVX_LLM_MODEL")
+            .ok()
+            .unwrap_or_else(|| "gpt-4o-mini".into());
+        if api_url.is_empty() {
+            return None;
+        }
+        Some(Self {
+            api_url,
+            api_key,
+            model,
+            http: reqwest::blocking::Client::new(),
+        })
+    }
+
+    fn role_str(r: &Role) -> &'static str {
+        match r {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::Tool => "tool",
+        }
+    }
+}
+
+impl ChatProvider for OpenAiChatProvider {
+    fn chat(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[Value]>,
+    ) -> Result<LlmMessage, String> {
+        let msgs: Vec<Value> = messages
+            .iter()
+            .map(|m| serde_json::json!({"role": Self::role_str(&m.role), "content": m.content}))
+            .collect();
+        let mut payload = serde_json::json!({"model": self.model, "messages": msgs});
+        if let Some(ts) = tools {
+            payload["tools"] = serde_json::Value::Array(ts.to_vec());
+            payload["tool_choice"] = serde_json::json!("auto");
+        }
+        let url = format!("{}/chat/completions", self.api_url.trim_end_matches('/'));
+        let resp = self
+            .http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .bearer_auth(&self.api_key)
+            .json(&payload)
+            .send()
+            .map_err(|e| format!("LLM 请求失败: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("LLM HTTP {}", resp.status()));
+        }
+        let body: Value = resp.json().map_err(|e| format!("LLM 响应解析失败: {e}"))?;
+        let msg = &body["choices"][0]["message"];
+        let content = msg["content"].as_str().unwrap_or("").to_string();
+        let mut tool_calls = Vec::new();
+        if let Some(calls) = msg["tool_calls"].as_array() {
+            for (i, c) in calls.iter().enumerate() {
+                tool_calls.push(ToolCall {
+                    id: c["id"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("call-{i}")),
+                    function_name: c["function"]["name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    arguments: c["function"]["arguments"]
+                        .as_str()
+                        .unwrap_or("{}")
+                        .to_string(),
+                });
+            }
+        }
+        Ok(LlmMessage {
+            content,
+            tool_calls,
+        })
+    }
+}
+
 /// 构造消息。
 pub fn system_message(content: String) -> ChatMessage {
     ChatMessage {

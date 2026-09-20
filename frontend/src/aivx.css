@@ -545,6 +545,61 @@
   color: var(--coral);
 }
 
+/* 聊天输入行：glass-input 自适应宽 + 主按钮 */
+.agent-input-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.agent-input-row .glass-input {
+  flex: 1;
+}
+
+/* 工具调用步骤小行（agent 轮内嵌渲染） */
+.agent-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  width: 100%;
+}
+
+.agent-step {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.035);
+  border: 1px solid var(--border-color);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+:root[data-theme='dark'] .agent-step {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.agent-step code {
+  align-self: flex-start;
+  font-size: 11.5px;
+}
+
+.agent-step span {
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-step.step-fail {
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.agent-step.step-fail span {
+  color: var(--coral);
+}
+
 /* ── 侧栏底部主题切换行（AIGX 用户区的无登录替代） ───── */
 .sidebar-footer {
   padding-bottom: 2px;
@@ -615,5 +670,13 @@
 
   .msg {
     max-width: 90%;
+  }
+
+  .agent-input-row {
+    flex-direction: column;
+  }
+
+  .agent-input-row .glass-input {
+    width: 100%;
   }
 }
