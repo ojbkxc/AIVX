@@ -58,8 +58,8 @@ impl RecordCfg {
     }
 }
 
-/// 目录名消毒：只留字母数字-_（防路径注入）。
-fn sanitize(s: &str) -> String {
+/// 目录名消毒：只留字母数字-_（防路径注入）。pub 供控制面扫描编排复用。
+pub fn sanitize(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .collect()

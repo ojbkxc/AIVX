@@ -1,8 +1,12 @@
-// 报警中心页（P8d）：活跃报警 + 事件流计数（alarms summary 5s 轮询）。
+// 报警中心页（P8e）：汇总卡 + 明细表（alarms summary 5s 轮询）。
 
 import { useEffect, useState } from 'react';
 import type { ApiClient } from '../api';
-import type { AlarmsSummary as Summary } from '../types';
+import type { Alarm, AlarmsSummary as Summary } from '../types';
+
+function fmtTs(ts: number): string {
+  return new Date(ts * 1000).toLocaleString();
+}
 
 export function AlarmsPage({ api }: { api: ApiClient }) {
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -29,6 +33,8 @@ export function AlarmsPage({ api }: { api: ApiClient }) {
     };
   }, [api]);
 
+  const items: Alarm[] = summary?.items ?? [];
+
   return (
     <div className="alarms-page" data-testid="alarms-page">
       <div className="page-head">
@@ -49,9 +55,42 @@ export function AlarmsPage({ api }: { api: ApiClient }) {
           <span className="stat-label">已投影事件</span>
         </div>
       </div>
-      <p className="hint">
-        报警明细列表随投影器派生表 API（P8e）接入后展示；当前为汇总视图。
-      </p>
+      {items.length === 0 ? (
+        <p className="hint">暂无报警记录。</p>
+      ) : (
+        <div className="glass-card">
+        <table data-testid="alarm-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>设备</th>
+              <th>规则</th>
+              <th>目标</th>
+              <th>置信度</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((a) => (
+              <tr key={a.alarm_id}>
+                <td>{fmtTs(a.raised_ts)}</td>
+                <td>{a.device_id}</td>
+                <td>{a.rule_id}</td>
+                <td>{a.label ?? '—'}</td>
+                <td>{a.score != null ? a.score.toFixed(2) : '—'}</td>
+                <td>
+                  {a.cleared_ts ? (
+                    <span className="badge badge-neutral">已清除</span>
+                  ) : (
+                    <span className="badge badge-danger">活跃</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        </div>
+      )}
     </div>
   );
 }

@@ -14,7 +14,7 @@ use aivx_events::{AlarmId, Event};
 #[cfg(test)]
 use aivx_perception::bridge::PlaneBridge;
 
-use crate::memory::{MemEventStore, MemProjections, StoredEvent};
+use crate::memory::{AlarmRow, MemEventStore, MemProjections, RecordingRow, StoredEvent};
 
 /// forwarder：把数据面的 sync_channel 事件转交 DbWriter（tokio 侧的桥）。
 ///
@@ -135,6 +135,7 @@ impl DbWriter {
 /// Projector：从 events 重放/增量投影（DESIGN.md §5.3 + ADR-028 僵尸清扫）。
 pub struct Projector {
     store: Arc<MemEventStore>,
+    projections: Arc<MemProjections>,
     checkpoint: u64,
     /// 活跃报警（alarm_id → raised seq；清扫用）。
     active_alarms: HashMap<AlarmId, u64>,
@@ -143,10 +144,11 @@ pub struct Projector {
 }
 
 impl Projector {
-    pub fn new(store: Arc<MemEventStore>, _projections: Arc<MemProjections>) -> Self {
+    pub fn new(store: Arc<MemEventStore>, projections: Arc<MemProjections>) -> Self {
         let checkpoint = 0; // 生产从 checkpoint 表读；P0 从 0
         Self {
             store,
+            projections,
             checkpoint,
             active_alarms: Default::default(),
             max_alarm_ttl_ticks: 10,
@@ -188,12 +190,58 @@ impl Projector {
     }
 
     fn project_one(&mut self, ev: &Event, seq: u64) {
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
         match ev {
-            Event::AlarmRaised { alarm_id, .. } => {
+            Event::AlarmRaised {
+                alarm_id,
+                device_id,
+                rule_id,
+                track,
+                ..
+            } => {
                 self.active_alarms.insert(alarm_id.clone(), seq);
+                self.projections.alarms.lock().unwrap().insert(alarm_id.clone(), ());
+                self.projections.alarm_rows.lock().unwrap().push(AlarmRow {
+                    alarm_id: alarm_id.clone(),
+                    device_id: device_id.clone(),
+                    rule_id: rule_id.clone(),
+                    raised_ts: now_ts,
+                    label: track.as_ref().map(|t| t.label.clone()),
+                    score: track.as_ref().map(|t| t.score),
+                    cleared_ts: None,
+                    cleared_reason: None,
+                });
             }
-            Event::AlarmCleared { alarm_id, .. } => {
+            Event::AlarmCleared { alarm_id, reason } => {
                 self.active_alarms.remove(alarm_id);
+                self.projections.alarms.lock().unwrap().remove(alarm_id);
+                let mut rows = self.projections.alarm_rows.lock().unwrap();
+                if let Some(row) = rows
+                    .iter_mut()
+                    .rev()
+                    .find(|r| r.alarm_id == *alarm_id && r.cleared_ts.is_none())
+                {
+                    row.cleared_ts = Some(now_ts);
+                    row.cleared_reason = Some(reason.clone());
+                }
+            }
+            Event::RecordingSegment {
+                device_id,
+                file_path,
+                start_mono_ns,
+                ..
+            } => {
+                // start_mono_ns 字段实为 mtime 墙钟纳秒（record.rs 历史误名）。
+                self.projections.recordings.lock().unwrap().push(RecordingRow {
+                    id: format!("{device_id}-{start_mono_ns}"),
+                    device_id: device_id.clone(),
+                    file_path: file_path.clone(),
+                    start_ts: (*start_mono_ns / 1_000_000_000) as i64,
+                    duration_secs: 0.0, // API 层按段序差分补
+                });
             }
             _ => {}
         }

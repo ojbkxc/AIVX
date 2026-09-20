@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use aivx_events::Event;
+use serde::Serialize;
 
 /// 落库后的定序事件（带全局 seq）。
 #[derive(Debug, Clone)]
@@ -53,10 +54,43 @@ impl MemEventStore {
     }
 }
 
-/// 内存投影（模拟 alarms/派生表）。
+/// 报警派生表行（/api/alarms items 的形状）。
+#[derive(Debug, Clone, Serialize)]
+pub struct AlarmRow {
+    pub alarm_id: String,
+    pub device_id: String,
+    pub rule_id: String,
+    /// 投影时刻墙钟（Unix 秒）——事件只有 mono_ns（单调钟），不可读；
+    /// 内存链路投影延迟 ms 级，投影时刻≈报警时刻。
+    pub raised_ts: i64,
+    /// 轨迹标签（MotionStub 恒 motion；YOLO 后是有语义的 label）。
+    pub label: Option<String>,
+    pub score: Option<f32>,
+    /// 清除时刻（Unix 秒）；活跃报警为 None。
+    pub cleared_ts: Option<i64>,
+    /// 清除原因（track_lost / zone_left / cooldown / stale_on_boot）。
+    pub cleared_reason: Option<String>,
+}
+
+/// 录像段派生表行（/api/recordings 的形状）。
+#[derive(Debug, Clone, Serialize)]
+pub struct RecordingRow {
+    pub id: String,
+    pub device_id: String,
+    pub file_path: String,
+    pub start_ts: i64,
+    pub duration_secs: f64,
+}
+
+/// 内存投影（模拟 alarms/recordings 派生表）。
 #[derive(Default)]
 pub struct MemProjections {
+    /// 活跃报警集（I8 状态机跳变时写；zombie sweep 用）。
     pub alarms: Mutex<HashMap<aivx_events::AlarmId, ()>>,
+    /// 报警派生表（含已清除历史，供 /api/alarms items 查询）。
+    pub alarm_rows: Mutex<Vec<AlarmRow>>,
+    /// 录像段派生表（RecordingSegment 投影）。
+    pub recordings: Mutex<Vec<RecordingRow>>,
     /// Projector 实际消费到的 seq 列表（无洞断言用，ADR-022 回归测试）。
     pub consumed_seqs: Mutex<Vec<u64>>,
 }
@@ -81,5 +115,25 @@ impl MemProjections {
             }
         }
         true
+    }
+
+    /// 最近报警（倒序，/api/alarms items 用）。
+    pub fn recent_alarms(&self, limit: usize) -> Vec<AlarmRow> {
+        let mut rows = self.alarm_rows.lock().unwrap().clone();
+        rows.sort_by(|a, b| b.raised_ts.cmp(&a.raised_ts).then(b.alarm_id.cmp(&a.alarm_id)));
+        rows.truncate(limit);
+        rows
+    }
+
+    /// 设备录像段（start_ts 升序）。duration 由 API 层差分补（段固定 600s）。
+    pub fn recordings_of(&self, device_id: &str) -> Vec<RecordingRow> {
+        let rows = self.recordings.lock().unwrap();
+        let mut out: Vec<RecordingRow> = rows
+            .iter()
+            .filter(|r| r.device_id == device_id)
+            .cloned()
+            .collect();
+        out.sort_by_key(|r| r.start_ts);
+        out
     }
 }

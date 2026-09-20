@@ -11,5 +11,7 @@ pub mod agent;
 pub mod cameras;
 pub mod cognition;
 pub mod cognition_llm;
+pub mod fmp4;
 pub mod memory;
 pub mod pipeline;
+pub mod preview;

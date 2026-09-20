@@ -1,9 +1,11 @@
-// 实时预览页（P8d）：4 路画面位 + 流状态（healthz 2s 轮询）。
-// 布局参照 AIGX Dashboard——卡片网格 + 实时指标。
+// 实时预览页（P8e）：每路 <video> fMP4/MSE 播放 + 流状态（healthz 2s 轮询）。
+// 播放管线见 lib/fmp4-player.ts（协议照 ai-nvr：WS 二进制 init/media 帧）。
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ApiClient } from '../api';
 import type { Device, StreamStatus } from '../types';
+import { attachFmp4Stream, buildStreamUrl } from '../lib/fmp4-player';
+import type { Fmp4PlayerState } from '../lib/fmp4-player';
 
 const STATE_LABEL: Record<StreamStatus['state'], string> = {
   ok: '正常',
@@ -16,13 +18,33 @@ const STATE_LABEL: Record<StreamStatus['state'], string> = {
 function StreamCard({ device, status }: { device: Device; status?: StreamStatus }) {
   const state = status?.state ?? 'connecting';
   const fps = status ? Math.round(status.decode_frames / 30) : 0; // 30s 采样窗粗估
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [player, setPlayer] = useState<Fmp4PlayerState>({ status: 'connecting' });
+
+  useEffect(() => {
+    if (!device.rtsp_main || videoRef.current === null) return;
+    const handle = attachFmp4Stream(videoRef.current, buildStreamUrl(device.id), setPlayer);
+    return () => handle.destroy();
+  }, [device.id, device.rtsp_main]);
+
   return (
     <div className={`stream-card state-${state}`} data-testid={`stream-${device.id}`}>
       <div className="stream-view">
-        {/* P8e 接视频播放器（fMP4/MSE）；当前显示状态占位 */}
-        <div className="stream-placeholder">
-          <span className="stream-name">{device.name}</span>
-        </div>
+        <video
+          ref={videoRef}
+          muted
+          autoPlay
+          playsInline
+          className={`stream-video ${player.status === 'playing' ? '' : 'hidden'}`}
+        />
+        {player.status !== 'playing' && (
+          <div className="stream-placeholder">
+            <span className="stream-name">{device.name}</span>
+            <span className="stream-status">
+              {player.status === 'failed' ? `预览不可用：${player.error ?? ''}` : '预览连接中…'}
+            </span>
+          </div>
+        )}
       </div>
       <div className="stream-meta">
         <span className={`state-badge ${state}`}>{STATE_LABEL[state]}</span>

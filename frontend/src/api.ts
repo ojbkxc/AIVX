@@ -33,9 +33,8 @@ export class RealApiClient implements ApiClient {
     return this.get<AlarmsSummary>('/alarms');
   }
 
-  async listRecordings(_deviceId: string): Promise<Recording[]> {
-    // P8d：后端录像索引 API 待接（recordings 投影器读）——当前返回空
-    return [];
+  async listRecordings(deviceId: string): Promise<Recording[]> {
+    return this.get<Recording[]>(`/recordings/${encodeURIComponent(deviceId)}`);
   }
 }
 
@@ -44,6 +43,8 @@ export class MockApiClient implements ApiClient {
   constructor(
     private devices: Device[] = [],
     private healthzData?: Healthz,
+    private alarmsData?: AlarmsSummary,
+    private recordingsData?: Recording[],
   ) {}
 
   async listDevices(): Promise<Device[]> {
@@ -67,10 +68,10 @@ export class MockApiClient implements ApiClient {
   }
 
   async alarmsSummary(): Promise<AlarmsSummary> {
-    return { active: 0, projected_events: 3 };
+    return this.alarmsData ?? { active: 0, projected_events: 3, items: [] };
   }
 
   async listRecordings(_deviceId: string): Promise<Recording[]> {
-    return [];
+    return this.recordingsData ?? [];
   }
 }

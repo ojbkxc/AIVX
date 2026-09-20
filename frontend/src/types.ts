@@ -24,13 +24,16 @@ export interface Device {
   record_mode?: 'off' | 'always' | 'motion';
 }
 
-/** 报警条目。 */
+/** 报警条目（明细派生表行，P8e）。 */
 export interface Alarm {
-  id: string;
+  alarm_id: string;
   device_id: string;
-  event_type: string;
-  description: string;
-  ts: number;
+  rule_id: string;
+  raised_ts: number;
+  label: string | null;
+  score: number | null;
+  cleared_ts: number | null;
+  cleared_reason: string | null;
 }
 
 /** 录像片段。 */
@@ -58,8 +61,9 @@ export interface Healthz {
   streams?: StreamStatus[];
 }
 
-/** 报警汇总（/api/alarms）。 */
+/** 报警汇总（/api/alarms，P8e 起含明细派生表）。 */
 export interface AlarmsSummary {
   active: number;
   projected_events: number;
+  items?: Alarm[];
 }
