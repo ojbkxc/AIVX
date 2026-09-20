@@ -192,7 +192,8 @@ async fn agent_chat(
         return (
             axum::http::StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "missing message"})),
-        );
+        )
+            .into_response();
     };
     let session_id = "main";
     let agent = Arc::clone(&s.agent);
@@ -302,6 +303,7 @@ async fn agent_chat(
         "events": items,
         "llm_configured": llm_configured,
     }))
+    .into_response()
 }
 
 /// RTSP URL userinfo 脱敏：`rtsp://admin:pass@host/…` → `rtsp://***@host/…`。

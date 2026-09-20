@@ -31,7 +31,6 @@ const RESTART_CAP: Duration = Duration::from_secs(30);
 
 /// 每路摄像头的预览流（一个 ffmpeg + 一条 broadcast）。
 pub struct PreviewStream {
-    id: String,
     rtsp_url: String,
     ffmpeg: String,
     /// 已编码 WS 消息的广播（Arc<PreviewStream> 内共享）。
@@ -50,10 +49,9 @@ struct StreamLifecycle {
 }
 
 impl PreviewStream {
-    fn new(id: String, rtsp_url: String, ffmpeg: String) -> Arc<Self> {
+    fn new(rtsp_url: String, ffmpeg: String) -> Arc<Self> {
         let (tx, _) = broadcast::channel(CHANNEL_CAP);
         Arc::new(Self {
-            id,
             rtsp_url,
             ffmpeg,
             tx,
@@ -327,7 +325,7 @@ impl PreviewHub {
         let mut map = self.streams.lock().await;
         let stream = map
             .entry(id.to_string())
-            .or_insert_with(|| PreviewStream::new(id.into(), rtsp.clone(), self.ffmpeg.clone()))
+            .or_insert_with(|| PreviewStream::new(rtsp.clone(), self.ffmpeg.clone()))
             .clone();
         drop(map);
         Some(stream.subscribe().await)

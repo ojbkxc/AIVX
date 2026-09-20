@@ -4,6 +4,7 @@
 //! fMP4 到 stdout；本模块按 ISO BMFF box 边界（`[4B size][4B type]`）切分：
 //! - init segment = `ftyp` + `moov`（缓存供新客户端秒开）
 //! - media segment = 相邻的 `moof` + `mdat`
+//!
 //! codec 字符串从 moov 的 `stsd → avc1/hvc1 → avcC/hvcC` 提取（MSE 需要）。
 //!
 //! 参照：ai-nvr `h264-fmp4-muxer.ts`（Fmp4StreamParser）。差异：不做 tfdt 重写——
@@ -42,10 +43,7 @@ impl Fmp4Parser {
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Fmp4Chunk> {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
-        loop {
-            let Some((box_type, payload, consumed)) = parse_next_box(&self.buf) else {
-                break;
-            };
+        while let Some((box_type, payload, consumed)) = parse_next_box(&self.buf) {
             self.buf.drain(..consumed);
             self.handle_box(box_type, payload, &mut out);
         }
