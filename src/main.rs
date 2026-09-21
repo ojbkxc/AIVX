@@ -26,7 +26,7 @@ use std::sync::atomic::Ordering;
 
 use aivx::cameras::CameraManager;
 use aivx::memory::{MemEventStore, MemProjections};
-use aivx::pipeline::{forwarder, DbWriter, Projector};
+use aivx::pipeline::{DbWriter, Projector};
 use aivx::preview::PreviewHub;
 
 /// 运行配置（env → 默认值；文件层随 P8 ConfigHolder 落地）。
