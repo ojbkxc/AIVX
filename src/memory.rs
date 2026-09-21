@@ -138,6 +138,16 @@ impl MemProjections {
         before - rows.len()
     }
 
+    /// 全部录像段路径（扫描对账用：投影 vs 磁盘，文件没了行也摘）。
+    pub fn all_recording_paths(&self) -> Vec<std::path::PathBuf> {
+        self.recordings
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| std::path::PathBuf::from(&r.file_path))
+            .collect()
+    }
+
     /// 设备录像段（start_ts 升序）。duration 由 API 层差分补（段固定 600s）。
     pub fn recordings_of(&self, device_id: &str) -> Vec<RecordingRow> {
         let rows = self.recordings.lock().unwrap();

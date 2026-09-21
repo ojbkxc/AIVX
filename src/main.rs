@@ -488,7 +488,6 @@ async fn main() -> anyhow::Result<()> {
                 let _ = tokio::task::spawn_blocking(move || {
                     // 整轮持锁：扫描是 10s 低频后台任务，无并发竞争
                     let mut scanners = scanners.lock().unwrap();
-                    let mut swept_total: Vec<std::path::PathBuf> = Vec::new();
                     for cam in &cams.cameras {
                         if cam.record_mode == "off" {
                             continue;
@@ -506,17 +505,25 @@ async fn main() -> anyhow::Result<()> {
                         // 轮顺带清超期段——10s 周期无感（sweep 只 stat+remove）。
                         // retain_days=0（always 录/未配 days）→ 不清理。
                         if cam.retain_days > 0 {
-                            swept_total.extend(aivx_perception::record::sweep_stale(
+                            let _ = aivx_perception::record::sweep_stale(
                                 &dev_dir,
                                 cam.retain_days,
                                 600,
-                            ));
+                            );
                         }
                     }
-                    // 清理联动：磁盘删了的段，投影行也摘除——否则录像列表挂着
-                    // 已删文件，回放点开 404（sweep 假段验证时线上抓到）。
-                    if !swept_total.is_empty() {
-                        projs.remove_recordings(&swept_total);
+                    // 清理联动（投影 vs 磁盘对账）：磁盘已不存在的投影行直接
+                    // 摘除——否则录像列表挂着已删文件，回放点开 404。对账比按
+                    // swept 列表摘更鲁棒：scan-emit 的事件还在 channel/flush buf
+                    // 里（投影行尚未建立）时 remove 会摘空，flush 后行又回来；
+                    // 且手动删段/外部清理也能对上。10s 低频 stat 无感。
+                    {
+                        let rows = projs.all_recording_paths();
+                        let gone: Vec<std::path::PathBuf> =
+                            rows.into_iter().filter(|p| !p.exists()).collect();
+                        if !gone.is_empty() {
+                            projs.remove_recordings(&gone);
+                        }
                     }
                 })
                 .await;
