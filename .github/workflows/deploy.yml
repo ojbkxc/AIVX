@@ -21,8 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build release
-        run: cargo build --release --locked
+      # P8b：生产包带真实 YOLO 推理（aivx-ort-yolo-download → ort
+      # download-binaries 自动拉 ONNX Runtime 库并打包进 bundle）。
+      - name: Build release (with YOLO)
+        run: cargo build --release --locked --features aivx-ort-yolo-download
       - name: Build frontend
         run: |
           npm ci --prefix frontend
