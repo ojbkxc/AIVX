@@ -391,7 +391,9 @@ impl CameraManager {
                     // stream1 的 RTSP 会话（摄像头同 URL 仅容 1 并发），预览/
                     // 第二消费者必须走独立 URL（I4 主/子分离）。
                     rtsp_sub: Some(sub_stream_url(&input.path)),
-                    manufacturer: Some("TP-LINK".into()),
+                    // 厂商从 URL host 段探测（NVR IP → 网关页可查），探测不出
+                    // 留 None——此前硬编码 TP-LINK 对非 TP-LINK 设备是错的。
+                    manufacturer: None,
                     model: None,
                     capabilities: Capabilities {
                         main_sub_streams: true,
