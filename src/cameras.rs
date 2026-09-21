@@ -173,12 +173,13 @@ fn make_analyzer(
 }
 
 /// feature 未编译：恒 None（回退桩——CI 默认无 ort 依赖）。
+/// 返回类型须实现 FrameAnalyzer（spawn 分支的类型约束）——用桩类型占位。
 #[cfg(not(feature = "aivx-ort-yolo"))]
 fn make_analyzer(
     _model_path: Option<String>,
     _frame_w: usize,
     _frame_h: usize,
-) -> Option<std::convert::Infallible> {
+) -> Option<MotionStubAnalyzer> {
     None
 }
 
@@ -293,25 +294,20 @@ impl CameraManager {
                 let t2_name = format!("cam-{name}-t2-analyze");
                 match make_analyzer(model_path, cam.detect.width, cam.detect.height) {
                     Some(analyzer) => {
-                        std::thread::Builder::new()
-                            .name(t2_name)
-                            .spawn(move || {
-                                aivx_perception::analyze::analysis_loop(
-                                    device_id, slot, bridge, analyzer,
-                                )
-                            })?;
+                        let run = aivx_perception::analyze::analysis_loop;
+                        std::thread::Builder::new().name(t2_name).spawn(move || {
+                            run(device_id, slot, bridge, analyzer)
+                        })?;
                     }
                     None => {
-                        std::thread::Builder::new()
-                            .name(t2_name)
-                            .spawn(move || {
-                                aivx_perception::analyze::analysis_loop(
-                                    device_id,
-                                    slot,
-                                    bridge,
-                                    MotionStubAnalyzer,
-                                )
-                            })?;
+                        std::thread::Builder::new().name(t2_name).spawn(move || {
+                            aivx_perception::analyze::analysis_loop(
+                                device_id,
+                                slot,
+                                bridge,
+                                MotionStubAnalyzer,
+                            )
+                        })?;
                     }
                 }
             }

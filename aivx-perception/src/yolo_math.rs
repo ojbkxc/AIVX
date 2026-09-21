@@ -109,10 +109,12 @@ pub fn nv12_to_rgb_float(nv12: &[u8], w: u32, h: u32) -> Vec<f32> {
         return vec![0f32; 640 * 640 * 3];
     }
     let (y_plane, uv) = nv12.split_at(y_size);
-    // 目标：长边 640，短边按比例（偶数对齐），垂直居中
+    // 目标：长边 640，短边按比例缩放后**居中**放置（上下/左右对称补灰）
     let scale = 640.0 / w.max(h) as f32;
     let tw = (w as f32 * scale).round().max(1.0) as usize;
     let th = (h as f32 * scale).round().max(1.0) as usize;
+    let ox = (640 - tw.min(640)) / 2;
+    let oy = (640 - th.min(640)) / 2;
     let mut out = vec![0.5f32; 640 * 640 * 3]; // 补灰（0.5 ≈ 128/255）
     for dy in 0..th.min(640) {
         let sy = ((dy as f32) / scale) as usize;
@@ -134,7 +136,7 @@ pub fn nv12_to_rgb_float(nv12: &[u8], w: u32, h: u32) -> Vec<f32> {
             let r = (1.164 * c + 1.596 * e).clamp(0.0, 255.0) / 255.0;
             let g = (1.164 * c - 0.392 * d - 0.813 * e).clamp(0.0, 255.0) / 255.0;
             let b = (1.164 * c + 2.017 * d).clamp(0.0, 255.0) / 255.0;
-            let o = (dy * 640 + dx) * 3;
+            let o = ((oy + dy) * 640 + ox + dx) * 3;
             out[o] = r;
             out[o + 1] = g;
             out[o + 2] = b;
@@ -161,7 +163,8 @@ mod tests {
         out[num_det] = 320.0;
         out[2 * num_det] = 100.0;
         out[3 * num_det] = 200.0;
-        out[4 * num_det] = 0.9; // class 0 score（class-major：c=4 → 4*2+0）
+        out[4 * num_det] = 0.9;
+        // class 0 score（class-major：c=4 → 4*2+0）
         // det 1：低分——被阈值过滤
         out[1] = 100.0;
         out[num_det + 1] = 100.0;
@@ -182,12 +185,13 @@ mod tests {
     #[test]
     fn parse_output_scales_to_frame_space() {
         let num_det = 1;
-        let mut out = vec![0f32; 5]; // 4 坐标 + 1 类
-        out[0] = 320.0; // cx
-        out[1] = 180.0; // cy（num_det=1 时 cy 在 index 1）
-        out[2] = 64.0; // w
-        out[3] = 32.0; // h
-        out[4] = 0.8; // score
+        let mut out = vec![0f32; 5];
+        // cx / cy（num_det=1 时 cy 在 index 1）/ w / h / score
+        out[0] = 320.0;
+        out[1] = 180.0;
+        out[2] = 64.0;
+        out[3] = 32.0;
+        out[4] = 0.8;
         // 640×360 模型空间 → 1280×720 帧空间：scale 2.0/2.0
         let cands = parse_output(&out, num_det, 0.4, 2.0, 2.0);
         assert_eq!(cands.len(), 1);
@@ -222,41 +226,54 @@ mod tests {
         assert!((v - 0.0).abs() < 0.01);
     }
 
-    /// NV12 → RGB float：输出恒为 640×640×3（模型输入 shape）+ 灰帧 BT.601。
+    /// NV12 → RGB float：输出恒为 640×640×3（模型输入 shape）+ 灰帧
+    /// BT.601（Y=U=V=128 → RGB ≈ 130/255 ≈ 0.511）+ letterbox 居中。
     #[test]
     fn nv12_to_rgb_shape() {
         let nv12 = vec![128u8; 640 * 360 + 640 * 360 / 2];
         let rgb = nv12_to_rgb_float(&nv12, 640, 360);
         assert_eq!(rgb.len(), 640 * 640 * 3, "输出必须是模型输入 shape");
-        // Y=128 U=V=128 → BT.601 RGB ≈ (135,135,135)/255 ≈ 0.53
-        // 中心行（360 高 letterbox 居中在 640）应在有效区
-        let cy = 320; // letterbox 垂直中心
-        let cx = 320;
-        let px = (cy * 640 + cx) * 3;
-        assert!((rgb[px] - 0.53).abs() < 0.05, "中心像素应为灰 {:?}", &rgb[px..px + 3]);
-        // letterbox 上下边应为补灰 0.5
+        // 360 高居中在 640：内容区行 [140, 500)。中心 (320,320) 在内容区
+        let px = (320 * 640 + 320) * 3;
+        assert!(
+            (rgb[px] - 0.511).abs() < 0.01,
+            "中心像素应为 BT.601 灰 0.511，实得 {:.3}",
+            rgb[px]
+        );
+        assert!(
+            (rgb[px + 1] - rgb[px]).abs() < 0.001 && (rgb[px + 2] - rgb[px]).abs() < 0.001,
+            "灰帧三通道应相等"
+        );
+        // letterbox 区（行 10 在内容区外）应为补灰 0.5
         let top = (10 * 640 + 320) * 3;
         assert!((rgb[top] - 0.5).abs() < 0.01, "letterbox 区应为 0.5 补灰");
+        // 内容区首行（行 140）应是灰而非补灰
+        let first = (140 * 640 + 320) * 3;
+        assert!(
+            (rgb[first] - 0.511).abs() < 0.01,
+            "内容区首行应为灰（居中偏移=140），实得 {:.3}",
+            rgb[first]
+        );
     }
 
-    /// NV12 → RGB：色度渲染（U 偏移 → B 通道变化）。
+    /// NV12 → RGB：色度渲染（U 偏移 → B 通道变化；BT.601 中 B 与 U 正相关）。
     #[test]
     fn nv12_to_rgb_chroma() {
         let w = 4u32;
         let h = 4u32;
         let mut nv12 = vec![128u8; (w * h * 3 / 2) as usize];
-        // U=64（偏蓝方向）
+        // U=200（B 分量正向偏移：B = 1.164*C + 2.017*(U-128)）
         for i in ((w * h) as usize)..((w * h * 3 / 2) as usize) {
             if (i - (w * h) as usize) % 2 == 0 {
-                nv12[i] = 64;
+                nv12[i] = 200;
             }
         }
         let rgb = nv12_to_rgb_float(&nv12, w, h);
         // 4x4 → scale 160 → 全图 640；中心点应偏蓝（B > R）
         let c = (320 * 640 + 320) * 3;
         assert!(
-            rgb[c + 2] > rgb[c],
-            "U 偏低应偏蓝：B={:.3} R={:.3}",
+            rgb[c + 2] > rgb[c] + 0.1,
+            "U 高应显著偏蓝：B={:.3} R={:.3}",
             rgb[c + 2],
             rgb[c]
         );
