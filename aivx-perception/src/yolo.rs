@@ -52,48 +52,57 @@ impl OrtYoloBackend {
         })
     }
 
-    /// 用新模型 key 取可变 session（run 需 &mut self）。
-    fn session_for(
-        &self,
-        key: &EngineKey,
-    ) -> Result<std::sync::MutexGuard<'_, ort::session::Session>, String> {
-        let mut sessions = self.sessions.lock().unwrap();
-        if sessions.get(&key.model_id).is_some() {
-            Ok(std::sync::MutexGuard::map(sessions, |m| {
-                m.get_mut(&key.model_id).unwrap()
-            }))
-        } else {
-            Err(format!("模型 {} 未加载", key.model_id))
-        }
+    /// 模型是否已加载（session_for 的存在性检查——锁在 detect 内完成）。
+    fn has_model(&self, model_id: &str) -> bool {
+        self.sessions.lock().unwrap().contains_key(model_id)
     }
 }
 
 impl InferBackend for OrtYoloBackend {
     fn detect(&self, key: &EngineKey, inputs: &[Vec<u8>]) -> Vec<Vec<Det>> {
-        let mut session = match self.session_for(key) {
-            Ok(s) => s,
-            Err(_) => return inputs.iter().map(|_| Vec::new()).collect(),
-        };
+        if !self.has_model(&key.model_id) {
+            return inputs.iter().map(|_| Vec::new()).collect();
+        }
         // 批输入：每个 NV12 → RGB float，shape [N, 3, 640, 640]
         let n = inputs.len();
         let mut batch = Vec::with_capacity(n * 3 * 640 * 640);
         for inp in inputs {
             batch.extend(nv12_to_rgb_float(inp, key.input_w, key.input_h));
         }
+        // ort rc.13 实测 API（对 2.0.0-rc.13 源码核对）：
+        // - from_array 接受 (shape, data)（shape 在前）；(Vec, [i64;4]) 顺序反了
+        //   不实现 OwnedTensorArrayData
+        // - run 输入 SessionInputs：From<Vec<(K,V)>> / HashMap，不接受
+        //   Vec<Value>——用 (输入名, 张量) 元组 Vec
+        // - try_extract_tensor 返回 Result<(&Shape, &[T])>——数据在 .1
+        // MutexGuard::map 是 unstable（mapped_lock_guards）——直接持 map 锁
+        // 跑完 run（单模型串行，无并发损失）。
         let shape = [n as i64, 3, 640, 640];
-        // ort rc.13: 用 inputs! 宏 + TensorRef::from_array_view，或 Vec<Value>。
-        // 这里用 Vec<Value>（docs: run 接受 Vec/array/HashMap of Values）。
-        let tensor = match ort::value::Value::from_array((batch, shape)) {
+        let empty = || inputs.iter().map(|_| Vec::new()).collect::<Vec<Vec<_>>>();
+        let tensor = match ort::value::Value::from_array((shape, batch)) {
             Ok(v) => v,
-            Err(_) => return inputs.iter().map(|_| Vec::new()).collect(),
+            Err(_) => return empty(),
         };
-        let outputs = match session.run(vec![tensor]) {
+        let mut sessions = self.sessions.lock().unwrap();
+        let Some(session) = sessions.get_mut(&key.model_id) else {
+            return empty();
+        };
+        // 输入名从 session 元数据动态取（第 1 个输入；YOLOv8 导出为
+        // "images" 但不自绑名字——适配任意导出工具的命名）。
+        let input_name = match session.inputs().first() {
+            Some(i) => i.name().to_string(),
+            None => return empty(),
+        };
+        let outputs = match session.run(vec![(input_name, tensor)]) {
             Ok(o) => o,
-            Err(_) => return inputs.iter().map(|_| Vec::new()).collect(),
+            Err(_) => return empty(),
         };
         // 每个输入解析其输出切片。真实模型输出 [n, 84, 8400]（class-major），
         // 摊平后第 i 个输入占 [i*84*8400, (i+1)*84*8400)。
-        let output = outputs[0].try_extract_tensor::<f32>().unwrap_or_default();
+        let output = match outputs[0].try_extract_tensor::<f32>() {
+            Ok((_, data)) => data,
+            Err(_) => return empty(),
+        };
         let per_input = output.len() / n.max(1);
         // 模型空间 → 帧空间缩放（letterbox：x 方向 640/input_w）
         let scale_x = self.input_size as f32 / key.input_w as f32;
