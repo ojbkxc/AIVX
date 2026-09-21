@@ -137,50 +137,69 @@ fn sub_stream_url(main: &str) -> String {
     main.replacen("stream1", "stream2", 1)
 }
 
-/// 构造 T2 推理后端（P8b YOLO 接线）。
+/// 构造 T2 推理分析器（P8b YOLO 接线）。
 ///
-/// - `detect.model` 指定 ONNX 且 `ort-yolo` feature 启用：真实推理
-///   （PoolAnalyzer → DetectorPool → OrtYoloBackend，跨路共享一个池）。
-/// - 其余情况（未配模型 / feature 未编译 / 模型加载失败）：None → 调用方
-///   回退 MotionStubAnalyzer（检测链路保持可跑——不因模型缺失白屏）。
-///
-/// 池全局共享一份（所有摄像头跨路攒批——DESIGN.md §4）；首次构造时建池，
-/// 失败（如 ort 运行时库缺失）打日志降级为桩。
+/// - 共享池已建（`detect.model` 指定 ONNX 且加载成功）：PoolAnalyzer
+///   （跨路共享 DetectorPool → OrtYoloBackend，同模型路径全进程 1 份
+///   Session/worker——ADR-025。此前每路各建池：4 路 = 4×Session ≈ 700MB，
+///   线上把 MemoryMax=768M 打爆，OOM killer status=9/KILL 实证）。
+/// - 其余情况（未配模型 / 池构造失败）：None → 调用方回退
+///   MotionStubAnalyzer（检测链路保持可跑——不因模型缺失白屏）。
 #[cfg(feature = "aivx-ort-yolo")]
 fn make_analyzer(
-    model_path: Option<String>,
+    pool: Option<&std::sync::Arc<aivx_perception::pool::DetectorPool>>,
     frame_w: usize,
     frame_h: usize,
 ) -> Option<aivx_perception::pool_adapter::PoolAnalyzer> {
-    let path = model_path?;
-    let backend = match aivx_perception::yolo::OrtYoloBackend::new(&path, 0.4, 0.45) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("AIVX: YOLO 模型加载失败，T2 回退 MotionStubAnalyzer: {e}");
-            return None;
-        }
-    };
+    let pool = pool?;
     let key = aivx_perception::pool::EngineKey {
         model_id: "default".into(),
         device: "cpu".into(),
         input_w: frame_w as u32,
         input_h: frame_h as u32,
     };
-    let pool = std::sync::Arc::new(aivx_perception::pool::DetectorPool::new(backend));
-    let worker = pool.clone();
-    std::thread::spawn(move || worker.run_worker());
-    Some(aivx_perception::pool_adapter::PoolAnalyzer::new(pool, key))
+    Some(aivx_perception::pool_adapter::PoolAnalyzer::new(pool.clone(), key))
 }
 
 /// feature 未编译：恒 None（回退桩——CI 默认无 ort 依赖）。
 /// 返回类型须实现 FrameAnalyzer（spawn 分支的类型约束）——用桩类型占位。
 #[cfg(not(feature = "aivx-ort-yolo"))]
 fn make_analyzer(
-    _model_path: Option<String>,
+    _pool: Option<&std::sync::Arc<aivx_perception::pool::DetectorPool>>,
     _frame_w: usize,
     _frame_h: usize,
 ) -> Option<MotionStubAnalyzer> {
     None
+}
+
+/// 按模型路径建/取共享推理池（ADR-025 同模型一份 Session——跨路攒批）。
+/// 失败（如 ort 运行时库缺失/模型损坏）按路径记忆，后续同路径路不再重试
+/// 加载，直接回退桩。
+#[cfg(feature = "aivx-ort-yolo")]
+fn shared_pool(
+    pools: &mut HashMap<String, Option<std::sync::Arc<aivx_perception::pool::DetectorPool>>>,
+    model_path: &str,
+) -> Option<std::sync::Arc<aivx_perception::pool::DetectorPool>> {
+    if let Some(cached) = pools.get(model_path) {
+        return cached.clone();
+    }
+    let built = match aivx_perception::yolo::OrtYoloBackend::new(model_path, 0.4, 0.45) {
+        Ok(backend) => {
+            let pool = std::sync::Arc::new(aivx_perception::pool::DetectorPool::new(backend));
+            let worker = pool.clone();
+            std::thread::Builder::new()
+                .name("yolo-pool-worker".into())
+                .spawn(move || worker.run_worker())
+                .ok()
+                .map(|_| pool)
+        }
+        Err(e) => {
+            eprintln!("AIVX: YOLO 模型加载失败，T2 回退 MotionStubAnalyzer: {e}");
+            None
+        }
+    };
+    pools.insert(model_path.to_string(), built.clone());
+    built
 }
 
 // ── 运行时编排 ────────────────────────────────────────────────
@@ -223,6 +242,11 @@ impl CameraManager {
     pub fn from_yaml_with_record(yaml: &AivxYaml, record_dir: PathBuf) -> anyhow::Result<Self> {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Event>(1024);
         let mut cameras = Vec::new();
+        // YOLO 共享池缓存（模型路径 → 池）：同路径全进程一份 Session/worker
+        // （ADR-025 跨路攒批；也避免多路各建 Session 的内存翻倍——线上 OOM 实证）。
+        #[cfg(feature = "aivx-ort-yolo")]
+        let mut yolo_pools: HashMap<String, Option<std::sync::Arc<aivx_perception::pool::DetectorPool>>> =
+            HashMap::new();
 
         for (name, cam) in &yaml.cameras {
             if !cam.enabled || !cam.detect.enabled {
@@ -290,9 +314,22 @@ impl CameraManager {
                 let bridge = bridge.clone();
                 let slot = slot_t2;
                 let device_id = device_id.clone();
+                #[cfg_attr(not(feature = "aivx-ort-yolo"), allow(unused_variables))]
                 let model_path = cam.detect.model.clone();
                 let t2_name = format!("cam-{name}-t2-analyze");
-                match make_analyzer(model_path, cam.detect.width, cam.detect.height) {
+                // 共享池：同模型路径一份（多路同模型跨路攒批，Session 不翻倍）
+                #[cfg(feature = "aivx-ort-yolo")]
+                let pool_ref = model_path
+                    .as_deref()
+                    .and_then(|p| shared_pool(&mut yolo_pools, p));
+                #[cfg(not(feature = "aivx-ort-yolo"))]
+                let pool_ref: Option<&std::sync::Arc<aivx_perception::pool::DetectorPool>> = None;
+                #[cfg(feature = "aivx-ort-yolo")]
+                let analyzer_pool = pool_ref.as_ref();
+                #[cfg(not(feature = "aivx-ort-yolo"))]
+                #[allow(unused_variables)]
+                let analyzer_pool = pool_ref;
+                match make_analyzer(analyzer_pool, cam.detect.width, cam.detect.height) {
                     Some(analyzer) => {
                         let run = aivx_perception::analyze::analysis_loop;
                         std::thread::Builder::new()

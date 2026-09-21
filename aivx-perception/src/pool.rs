@@ -20,8 +20,11 @@ pub struct InferReq {
     pub key: EngineKey,
     /// 输入 NV12 帧副本（scratch，预分配）。
     pub input: Vec<u8>,
-    /// 结果投递槽：worker 填 dets + notify；T2 等待。
-    pub result: Arc<(Mutex<Vec<Det>>, Condvar)>,
+    /// 结果投递槽：worker 写 `Some(dets)` + notify；T2 等 `Some`。
+    /// **必须用 Option 包裹**：空检测结果（YOLO 无目标）也是完成态——
+    /// 线上实证若裸存 `Vec<Det>` 并以 `is_empty` 判完成，空结果会让
+    /// T2 在 condvar 上永久死等（inferences 恒 0 的卡死根因）。
+    pub result: Arc<(Mutex<Option<Vec<Det>>>, Condvar)>,
 }
 
 impl InferReq {
@@ -29,7 +32,7 @@ impl InferReq {
         Self {
             key,
             input,
-            result: Arc::new((Mutex::new(Vec::new()), Condvar::new())),
+            result: Arc::new((Mutex::new(None), Condvar::new())),
         }
     }
 }
@@ -119,12 +122,13 @@ impl DetectorPool {
             let key = inflight[0].key.clone();
             let inputs: Vec<Vec<u8>> = inflight.iter().map(|r| r.input.clone()).collect();
             let results = self.backend.detect(&key, &inputs);
-            // 真实结果投递：每个请求的 result 槽写入 dets + notify（T2 等它）
+            // 真实结果投递：每个请求的 result 槽写入 Some(dets) + notify（T2 等它）。
+            // 无论 dets 是否为空都必须写——空结果也是完成态（见 InferReq.result）。
             for (req, dets) in inflight.drain(..).zip(results) {
                 let (lock, cv) = &*req.result;
-                let mut slots = lock.lock().unwrap();
-                *slots = dets;
-                drop(slots);
+                let mut slot = lock.lock().unwrap();
+                *slot = Some(dets);
+                drop(slot);
                 cv.notify_one();
             }
             last_flush = Instant::now();
@@ -139,13 +143,16 @@ impl DetectorPool {
         let result = req.result.clone();
         self.queue.lock().unwrap().push(req);
         self.cv.notify_one();
-        // 等 worker 把 dets 写进 result 槽（park 在 result 的 condvar，不自旋）
+        // 等 worker 把 dets 写进 result 槽（park 在 result 的 condvar，不自旋）。
+        // Some 才算完成——空结果也是 Some(Vec::new())。
         let (lock, cv) = &*result;
-        let mut slots = lock.lock().unwrap();
-        while slots.is_empty() {
-            slots = cv.wait(slots).unwrap();
+        let mut slot = lock.lock().unwrap();
+        loop {
+            if let Some(dets) = slot.take() {
+                return dets;
+            }
+            slot = cv.wait(slot).unwrap();
         }
-        std::mem::take(&mut *slots)
     }
 
     pub fn shutdown(&self) {
