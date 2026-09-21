@@ -70,11 +70,22 @@ impl PlaneBridge {
 
     /// T2 热路径出口（I2/I12）：永不阻塞，分级处置。
     pub fn emit(&self, ev: Event) {
+        let _ = self.emit_status(ev);
+    }
+
+    /// emit 的送达报告版（scanner 用）：false = 事件没进 channel（满/关停
+    /// 且不可 spill 丢弃）。scanner 依赖它决定是否标记 seen——未送达下轮
+    /// 重发，不丢段。
+    pub fn emit_status(&self, ev: Event) -> bool {
         match self.tx.try_send(ev) {
-            Ok(()) => {}
-            Err(TrySendError::Full(critical)) => self.handle_full(critical),
+            Ok(()) => true,
+            Err(TrySendError::Full(critical)) => {
+                self.handle_full(critical);
+                false
+            }
             Err(TrySendError::Disconnected(_)) => {
                 // 控制面已关停——丢弃即可（关停序列由 forwarder drain 保证）
+                false
             }
         }
     }

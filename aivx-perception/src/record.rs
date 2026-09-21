@@ -129,8 +129,10 @@ impl SegmentScanner {
         }
     }
 
-    /// 扫描新段。`emit` 每段回调（控制面组装事件）。
-    pub fn scan(&mut self, mut emit: impl FnMut(Event)) {
+    /// 扫描新段。`emit` 返回 false 表示事件没送达（channel 满/关停）——
+    /// 该文件**不得标记 seen**，下轮扫描重试（否则满队列时永久丢段——
+    /// 线上 boot 首轮 556+582 段灌爆 1024 容量，尾部 117 段被 seen 吞掉）。
+    pub fn scan(&mut self, mut emit: impl FnMut(Event) -> bool) {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return;
         };
@@ -145,21 +147,27 @@ impl SegmentScanner {
             .collect();
         found.sort_by_key(|(_, mtime, _)| *mtime);
         for (path, mtime, size) in found {
-            if self.seen.insert(path.clone()) {
-                let start_mono = mtime
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos() as u64)
-                    .unwrap_or(0);
-                // 段时长：文件名 %Y%m%d_%H%M%S 解析（失败则 duration=0 由投影器容错）
-                let dur = parse_duration_hint(&path).unwrap_or(0.0);
-                emit(Event::RecordingSegment {
-                    device_id: self.device_id.clone(),
-                    file_path: path.to_string_lossy().into_owned(),
-                    start_mono_ns: start_mono,
-                    duration_secs: dur,
-                });
-                let _ = size;
+            if self.seen.contains(&path) {
+                continue;
             }
+            let start_mono = mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            // 段时长：文件名 %Y%m%d_%H%M%S 解析（失败则 duration=0 由投影器容错）
+            let dur = parse_duration_hint(&path).unwrap_or(0.0);
+            let delivered = emit(Event::RecordingSegment {
+                device_id: self.device_id.clone(),
+                file_path: path.to_string_lossy().into_owned(),
+                start_mono_ns: start_mono,
+                duration_secs: dur,
+            });
+            if delivered {
+                self.seen.insert(path); // 送达才标记——未送达下轮重发
+            } else {
+                break; // channel 满了——后面的也送不进，留到下轮（有序性：旧段先）
+            }
+            let _ = size;
         }
     }
 }
@@ -211,17 +219,72 @@ mod tests {
 
         let mut scanner = SegmentScanner::new("dev-1".into(), dir.clone());
         let mut first = Vec::new();
-        scanner.scan(|ev| first.push(ev));
+        scanner.scan(|ev| {
+            first.push(ev);
+            true
+        });
         assert_eq!(first.len(), 2, "首次扫描应发现 2 段");
         // 二次扫描：无新文件 → 不重发
         let mut second = Vec::new();
-        scanner.scan(|ev| second.push(ev));
+        scanner.scan(|ev| {
+            second.push(ev);
+            true
+        });
         assert!(second.is_empty(), "幂等：重复扫描不得重发");
         // 新增一段 → 只发新的
         std::fs::write(dir.join("seg_20260919_010301.mp4"), b"x").unwrap();
         let mut third = Vec::new();
-        scanner.scan(|ev| third.push(ev));
+        scanner.scan(|ev| {
+            third.push(ev);
+            true
+        });
         assert_eq!(third.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 满队列不丢段：emit 返回 false 的文件不得标记 seen——下轮扫描重发
+    /// （线上 boot 首轮 1138 段灌爆 1024 channel，尾部 117 段被 seen 吞掉
+    /// 的根因）。
+    #[test]
+    fn scan_undelivered_not_marked_seen() {
+        let dir = std::env::temp_dir().join(format!("aivx-seg-full-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("seg_20260919_010101.mp4"), b"x").unwrap();
+        std::fs::write(dir.join("seg_20260919_010201.mp4"), b"x").unwrap();
+
+        let mut scanner = SegmentScanner::new("dev-1".into(), dir.clone());
+        // 第一轮：首条送达后拒收（模拟 channel 满）
+        let mut first = Vec::new();
+        let mut n = 0;
+        scanner.scan(|ev| {
+            n += 1;
+            if n == 1 {
+                first.push(ev);
+                true
+            } else {
+                false
+            }
+        });
+        assert_eq!(first.len(), 1, "第一条应送达");
+        // 第二轮：第二条必须重发（未被 seen 吞）
+        let mut second = Vec::new();
+        scanner.scan(|ev| {
+            second.push(ev);
+            true
+        });
+        assert_eq!(
+            second.len(),
+            1,
+            "未送达的段下轮必须重发（不得被 seen 吞掉）"
+        );
+        // 第三轮：全部已送达 → 幂等
+        let mut third = Vec::new();
+        scanner.scan(|ev| {
+            third.push(ev);
+            true
+        });
+        assert!(third.is_empty(), "补发后恢复幂等");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

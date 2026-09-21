@@ -70,6 +70,10 @@ struct ApiState {
     agent: Arc<AgentState>,
 }
 
+impl ApiState {
+    /// 保留占位（smoke_event_chain 直接用 state.db）。
+}
+
 /// Agent 运维会话（P8e：单会话内存存根；SessionStore 持消息历史）。
 struct AgentState {
     ctx: aivx::agent::ActionContext,
@@ -426,14 +430,42 @@ async fn main() -> anyhow::Result<()> {
         "ADR-022 violated: fan-out has gaps"
     );
 
-    // forwarder：CameraManager 的全局汇聚 rx → DbWriter。
-    let fstore = store.clone();
-    let fproj = projections.clone();
-    tokio::spawn(async move {
-        // spawn_blocking：forwarder 的 recv 是阻塞式（std mpsc）——控制面
-        // runtime 不背阻塞 IO（ADR-022 链路保持不变）
-        forwarder(cam_rx, DbWriter::new(fstore, fproj), None).await;
-    });
+    // forwarder：CameraManager 的全局汇聚 rx → DbWriter（state.db 共享单
+    // 实例——双实例会各自分配 seq 交叉写坏 store）。阻塞 recv 挪专用线程
+    // （ADR-022：runtime worker 不背阻塞 IO）；50ms tick 兜底 flush：事件
+    // 不足一批（256）时不再卡 buf——线上 boot 首轮 flush 4 批后剩 <256 条
+    // 卡 30 分钟不投影，录像列表缺最新段。
+    {
+        let db = state.db.clone();
+        std::thread::Builder::new()
+            .name("cam-forwarder-recv".into())
+            .spawn(move || {
+                while let Ok(ev) = cam_rx.recv() {
+                    let mut db = db.blocking_lock();
+                    db.enqueue(ev);
+                    if db.pending_len() >= db.batch_limit() {
+                        db.flush_sync(); // 批满即刷（大流量路径不变）
+                    }
+                }
+                // 发送端全 drop（关停）：drain 并 flush（优雅关停 §17 步骤 2-3）
+                let mut db = db.blocking_lock();
+                db.flush_sync();
+            })
+            .expect("spawn forwarder thread");
+    }
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
+            loop {
+                tick.tick().await;
+                // flush 是同步内存操作（MemEventStore）——micro 级，不阻塞
+                // worker。P1 换 SeaORM 时改 spawn_blocking 提交事务。
+                let mut db = state.db.lock().await;
+                db.flush_sync();
+            }
+        });
+    }
 
     // 段索引扫描（P8e，DESIGN.md §3.3）：10s 轮询录像目录，新段发
     // RecordingSegment 事件进事件链 → 投影器建 recordings 派生表。
@@ -470,7 +502,7 @@ async fn main() -> anyhow::Result<()> {
                             )
                         });
                         let bridge = Arc::clone(&cam.bridge);
-                        scanner.scan(|ev| bridge.emit(ev));
+                        scanner.scan(|ev| bridge.emit_status(ev));
                     }
                 })
                 .await;
