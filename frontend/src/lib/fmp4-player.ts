@@ -198,6 +198,14 @@ export function attachFmp4Stream(
       pendingInit = parsed.fmp4;
       pending = [];
       onState({ status: 'connecting', codec: parsed.codec });
+      // 出画面检测：resize/loadeddata 事件——video 实际解码出尺寸才算
+      // playing（Live 页按 playing 摘占位符）。此前状态机从无 playing，
+      // 流正常也永远显示"预览连接中…"（线上视频墙黑屏的直接原因）。
+      const markPlaying = (): void => {
+        if (video.videoWidth > 0) onState({ status: 'playing', codec: parsed.codec });
+      };
+      video.addEventListener('resize', markPlaying);
+      video.addEventListener('loadeddata', markPlaying);
       decodeCheckTimer = window.setTimeout(() => {
         if (video.videoWidth === 0) {
           onState({ status: 'failed', error: '5s 内未出画面' });
