@@ -484,6 +484,7 @@ async fn main() -> anyhow::Result<()> {
                 let cams = Arc::clone(&cameras_for_scan);
                 let dir = scan_dir.clone();
                 let scanners = Arc::clone(&scanners);
+                let projs = Arc::clone(&projections_for_sweep);
                 let _ = tokio::task::spawn_blocking(move || {
                     // 整轮持锁：扫描是 10s 低频后台任务，无并发竞争
                     let mut scanners = scanners.lock().unwrap();
@@ -515,7 +516,7 @@ async fn main() -> anyhow::Result<()> {
                     // 清理联动：磁盘删了的段，投影行也摘除——否则录像列表挂着
                     // 已删文件，回放点开 404（sweep 假段验证时线上抓到）。
                     if !swept_total.is_empty() {
-                        projections_for_sweep.remove_recordings(&swept_total);
+                        projs.remove_recordings(&swept_total);
                     }
                 })
                 .await;
