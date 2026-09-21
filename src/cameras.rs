@@ -178,6 +178,10 @@ fn make_analyzer(
 /// 按模型路径建/取共享推理池（ADR-025 同模型一份 Session——跨路攒批）。
 /// 失败（如 ort 运行时库缺失/模型损坏）按路径记忆，后续同路径路不再重试
 /// 加载，直接回退桩。
+///
+/// conf 阈值 0.25（线上实测：TP-LINK 720p 场景 YOLOv8n 分数多在
+/// 0.37~0.55 波动，0.4 阈值下约 60% 推理帧检不出框，ByteTracker
+/// min_hits=3 难以确认轨迹 → 报警率趋零；0.25 帧检出稳定）。
 #[cfg(feature = "aivx-ort-yolo")]
 fn shared_pool(
     pools: &mut HashMap<String, Option<std::sync::Arc<aivx_perception::pool::DetectorPool>>>,
@@ -186,7 +190,7 @@ fn shared_pool(
     if let Some(cached) = pools.get(model_path) {
         return cached.clone();
     }
-    let built = match aivx_perception::yolo::OrtYoloBackend::new(model_path, 0.4, 0.45) {
+    let built = match aivx_perception::yolo::OrtYoloBackend::new(model_path, 0.25, 0.45) {
         Ok(backend) => {
             let pool = std::sync::Arc::new(aivx_perception::pool::DetectorPool::new(backend));
             let worker = pool.clone();
