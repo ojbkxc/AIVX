@@ -197,7 +197,7 @@ pub fn sweep_stale(device_dir: &Path, retain_days: u32, segment_secs: u32) -> Ve
     let mut removed = Vec::new();
     for e in entries.filter_map(|e| e.ok()) {
         let p = e.path();
-        if p.extension().map(|x| x == "mp4").unwrap_or(false) == false {
+        if p.extension().map(|x| x == "mp4") != Some(true) {
             continue;
         }
         let Ok(meta) = std::fs::metadata(&p) else {
@@ -210,11 +210,12 @@ pub fn sweep_stale(device_dir: &Path, retain_days: u32, segment_secs: u32) -> Ve
             continue; // mtime 在未来（时钟回拨）——不删
         };
         let age_secs = age.as_secs();
-        // 超期且超出活跃窗口才删
-        if age_secs > retain_days as u64 * 86400 && age_secs > active_grace {
-            if std::fs::remove_file(&p).is_ok() {
-                removed.push(p);
-            }
+        // 超期且超出活跃窗口才删（collapse 后 remove 失败静默——下轮再试）
+        if age_secs > retain_days as u64 * 86400
+            && age_secs > active_grace
+            && std::fs::remove_file(&p).is_ok()
+        {
+            removed.push(p);
         }
     }
     removed
