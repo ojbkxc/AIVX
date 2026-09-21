@@ -15,6 +15,22 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # 一次性辅助 job：生成权威 Cargo.lock（本机不编 Rust，lock 手工补易错）。
+  # 生成的 lock 上传 artifact 供人工取回提交；不影响 build-linux。
+  gen-lock:
+    name: Generate Cargo.lock (with YOLO deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Regenerate lock with download-binaries deps
+        run: cargo generate-lockfile --features aivx-ort-yolo-download
+      - name: Upload lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: Cargo.lock
+
   build-linux:
     name: Build linux-amd64 release bundle
     runs-on: ubuntu-22.04   # 目标机 Debian 12 = glibc 2.36；ubuntu-latest(24.04)=2.39 不可运行
