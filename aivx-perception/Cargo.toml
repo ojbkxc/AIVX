@@ -22,7 +22,9 @@ serde_json = { workspace = true }
 ort-yolo = ["dep:ort"]
 # ort-yolo + download-binaries：CI/部署构建用——build.rs 自动下载预编译
 # ONNX Runtime（默认 ort-yolo 不带它，需系统库；CI runner 无系统 onnxruntime）。
-ort-yolo-download = ["ort-yolo", "ort/download-binaries"]
+# download-binaries 走 https 下载，必须配 TLS feature（ort-sys 有
+# compile_error! 强制）——tls-rustls 用 ring provider，纯 Rust 无系统依赖。
+ort-yolo-download = ["ort-yolo", "ort/download-binaries", "ort/tls-rustls"]
 
 [dependencies.ort]
 version = "2.0.0-rc.13"
