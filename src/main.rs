@@ -470,6 +470,7 @@ async fn main() -> anyhow::Result<()> {
     // scanners Mutex 跨 'static 界限（tokio spawn_blocking 硬约束）。
     {
         let cameras_for_scan = Arc::clone(&cameras);
+        let projections_for_sweep = Arc::clone(&projections);
         let scan_dir = cfg.data_dir.join("record");
         let scanners = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
             String,
@@ -486,6 +487,7 @@ async fn main() -> anyhow::Result<()> {
                 let _ = tokio::task::spawn_blocking(move || {
                     // 整轮持锁：扫描是 10s 低频后台任务，无并发竞争
                     let mut scanners = scanners.lock().unwrap();
+                    let mut swept_total: Vec<std::path::PathBuf> = Vec::new();
                     for cam in &cams.cameras {
                         if cam.record_mode == "off" {
                             continue;
@@ -503,8 +505,17 @@ async fn main() -> anyhow::Result<()> {
                         // 轮顺带清超期段——10s 周期无感（sweep 只 stat+remove）。
                         // retain_days=0（always 录/未配 days）→ 不清理。
                         if cam.retain_days > 0 {
-                            aivx_perception::record::sweep_stale(&dev_dir, cam.retain_days, 600);
+                            swept_total.extend(aivx_perception::record::sweep_stale(
+                                &dev_dir,
+                                cam.retain_days,
+                                600,
+                            ));
                         }
+                    }
+                    // 清理联动：磁盘删了的段，投影行也摘除——否则录像列表挂着
+                    // 已删文件，回放点开 404（sweep 假段验证时线上抓到）。
+                    if !swept_total.is_empty() {
+                        projections_for_sweep.remove_recordings(&swept_total);
                     }
                 })
                 .await;

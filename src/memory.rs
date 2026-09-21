@@ -129,6 +129,15 @@ impl MemProjections {
         rows
     }
 
+    /// 清理联动：sweep 删了磁盘段后，把对应投影行也移除（否则列表里挂着
+    /// 已删文件，回放点开 404）。P0 内存投影直接 retain；P1 SeaORM 同步删行。
+    pub fn remove_recordings(&self, paths: &[std::path::PathBuf]) -> usize {
+        let mut rows = self.recordings.lock().unwrap();
+        let before = rows.len();
+        rows.retain(|r| !paths.iter().any(|p| r.file_path == p.to_string_lossy()));
+        before - rows.len()
+    }
+
     /// 设备录像段（start_ts 升序）。duration 由 API 层差分补（段固定 600s）。
     pub fn recordings_of(&self, device_id: &str) -> Vec<RecordingRow> {
         let rows = self.recordings.lock().unwrap();
@@ -139,5 +148,37 @@ impl MemProjections {
             .collect();
         out.sort_by_key(|r| r.start_ts);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// sweep 联动：remove_recordings 精确摘除已删段的投影行。
+    #[test]
+    fn remove_recordings_drops_swept_rows() {
+        let p = MemProjections::default();
+        p.recordings.lock().unwrap().extend(vec![
+            RecordingRow {
+                id: "a".into(),
+                device_id: "d".into(),
+                file_path: "/tmp/x/seg_1.mp4".into(),
+                start_ts: 1,
+                duration_secs: 0.0,
+            },
+            RecordingRow {
+                id: "b".into(),
+                device_id: "d".into(),
+                file_path: "/tmp/x/seg_2.mp4".into(),
+                start_ts: 2,
+                duration_secs: 0.0,
+            },
+        ]);
+        let removed = p.remove_recordings(&[std::path::PathBuf::from("/tmp/x/seg_1.mp4")]);
+        assert_eq!(removed, 1, "应摘除 1 行");
+        let rows = p.recordings_of("d");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].file_path, "/tmp/x/seg_2.mp4");
     }
 }
