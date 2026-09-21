@@ -178,6 +178,48 @@ fn parse_duration_hint(_path: &Path) -> Option<f64> {
     None
 }
 
+/// 按保留天数清理超期段（DESIGN.md §3.3 承诺：按天数自动清理）。
+///
+/// 删除 mtime 早于 `retain_days` 天前的 `*.mp4`；**绝不动正在写的段**
+/// （mtime 是封口时刻——ffmpeg segment 封口后不再碰它；但保守起见也
+/// 排除 mtime 在最近 segment_secs*2 内的文件，防时钟跳变误删活跃段）。
+/// 返回删除数。返回被删路径列表供调用方发事件/日志。
+pub fn sweep_stale(device_dir: &Path, retain_days: u32, segment_secs: u32) -> Vec<PathBuf> {
+    if retain_days == 0 {
+        return Vec::new(); // 0 = 永久保留（用户语义：days 缺省无限）
+    }
+    let Ok(entries) = std::fs::read_dir(device_dir) else {
+        return Vec::new();
+    };
+    // 保守活跃窗口：段时长的 2 倍（正在写的段 mtime 也会随写更新，
+    // 但时钟跳变/极端场景下双保险比事后恢复段便宜）。
+    let active_grace = segment_secs.max(60) as u64 * 2;
+    let mut removed = Vec::new();
+    for e in entries.filter_map(|e| e.ok()) {
+        let p = e.path();
+        if p.extension().map(|x| x == "mp4").unwrap_or(false) == false {
+            continue;
+        }
+        let Ok(meta) = std::fs::metadata(&p) else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let Ok(age) = std::time::SystemTime::now().duration_since(modified) else {
+            continue; // mtime 在未来（时钟回拨）——不删
+        };
+        let age_secs = age.as_secs();
+        // 超期且超出活跃窗口才删
+        if age_secs > retain_days as u64 * 86400 && age_secs > active_grace {
+            if std::fs::remove_file(&p).is_ok() {
+                removed.push(p);
+            }
+        }
+    }
+    removed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +327,39 @@ mod tests {
             true
         });
         assert!(third.is_empty(), "补发后恢复幂等");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 保留清理：超期段删除、新段与活跃段保留、retain_days=0 不清理。
+    #[test]
+    fn sweep_stale_respects_retention() {
+        let dir = std::env::temp_dir().join(format!("aivx-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("seg_20260101_000000.mp4");
+        let fresh = dir.join("seg_20260921_080000.mp4");
+        let recent = dir.join("seg_20260920_080000.mp4"); // 1 天内 → 留
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&fresh, b"x").unwrap();
+        std::fs::write(&recent, b"x").unwrap();
+
+        // 30 天前的 mtime
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .and_then(|f| f.set_modified(past));
+
+        // retain_days=0：永久保留，啥都不删
+        let removed = sweep_stale(&dir, 0, 600);
+        assert!(removed.is_empty(), "retain_days=0 不得清理");
+
+        // retain_days=7：old 删，fresh/recent 留
+        let removed = sweep_stale(&dir, 7, 600);
+        assert_eq!(removed.len(), 1, "只删 30 天前的段");
+        assert!(!old.exists(), "超期段必须删");
+        assert!(fresh.exists(), "新段必须保留");
+        assert!(recent.exists(), "1 天内段必须保留");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

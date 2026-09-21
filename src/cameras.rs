@@ -141,6 +141,8 @@ pub struct CameraHandle {
     pub bridge: Arc<PlaneBridge>,
     /// 录像模式：off / always / motion（对齐用户 Frigate 配置语义）。
     pub record_mode: &'static str,
+    /// 录像保留天数（record.motion.days；0 = 永久保留）。清理任务读它。
+    pub retain_days: u32,
 }
 
 /// CameraManager：按 YAML 拉起每路 T1+T2 线程束，持有句柄供查询/关停。
@@ -287,6 +289,9 @@ impl CameraManager {
                 },
                 bridge,
                 record_mode: cam.record.mode(),
+                // 保留天数：record.motion.days（用户语义"移动侦测录像保留 7 天"）；
+                // always 模式没写 days → 0 永久保留（宁多存不误删）。
+                retain_days: cam.record.motion.map(|m| m.days).unwrap_or(0),
             });
         }
 

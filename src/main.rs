@@ -499,6 +499,12 @@ async fn main() -> anyhow::Result<()> {
                         });
                         let bridge = Arc::clone(&cam.bridge);
                         scanner.scan(|ev| bridge.emit_status(ev));
+                        // 保留清理（README 承诺"按天数自动清理"落地）：扫描同一
+                        // 轮顺带清超期段——10s 周期无感（sweep 只 stat+remove）。
+                        // retain_days=0（always 录/未配 days）→ 不清理。
+                        if cam.retain_days > 0 {
+                            aivx_perception::record::sweep_stale(&dev_dir, cam.retain_days, 600);
+                        }
                     }
                 })
                 .await;
