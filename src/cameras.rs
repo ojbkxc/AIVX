@@ -158,7 +158,10 @@ fn make_analyzer(
         input_w: frame_w as u32,
         input_h: frame_h as u32,
     };
-    Some(aivx_perception::pool_adapter::PoolAnalyzer::new(pool.clone(), key))
+    Some(aivx_perception::pool_adapter::PoolAnalyzer::new(
+        pool.clone(),
+        key,
+    ))
 }
 
 /// feature 未编译：恒 None（回退桩——CI 默认无 ort 依赖）。
@@ -245,8 +248,10 @@ impl CameraManager {
         // YOLO 共享池缓存（模型路径 → 池）：同路径全进程一份 Session/worker
         // （ADR-025 跨路攒批；也避免多路各建 Session 的内存翻倍——线上 OOM 实证）。
         #[cfg(feature = "aivx-ort-yolo")]
-        let mut yolo_pools: HashMap<String, Option<std::sync::Arc<aivx_perception::pool::DetectorPool>>> =
-            HashMap::new();
+        let mut yolo_pools: HashMap<
+            String,
+            Option<std::sync::Arc<aivx_perception::pool::DetectorPool>>,
+        > = HashMap::new();
 
         for (name, cam) in &yaml.cameras {
             if !cam.enabled || !cam.detect.enabled {
@@ -323,7 +328,9 @@ impl CameraManager {
                     .as_deref()
                     .and_then(|p| shared_pool(&mut yolo_pools, p));
                 #[cfg(not(feature = "aivx-ort-yolo"))]
-                let pool_ref: Option<&std::sync::Arc<aivx_perception::pool::DetectorPool>> = None;
+                let pool_ref: Option<
+                    &std::sync::Arc<aivx_perception::pool::DetectorPool>,
+                > = None;
                 #[cfg(feature = "aivx-ort-yolo")]
                 let analyzer_pool = pool_ref.as_ref();
                 #[cfg(not(feature = "aivx-ort-yolo"))]
