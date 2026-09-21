@@ -20,9 +20,11 @@ Environment=AIVX_STATIC_DIR=/opt/aivx/static
 Environment=ORT_DYLIB_PATH=/opt/aivx/lib/libonnxruntime.so
 # 监听端口（用户指定 18443）
 Environment=AIVX_PORT=18443
-# 资源护栏：8 路预算 1.5 核 / 512MB（DESIGN.md §21 性能预算）
+# 资源护栏：CPU 按 8 路 1.5 核预算（DESIGN.md §21）；内存按 YOLO 推理
+# 实测定额——768M 被 ort arena + 批输入打爆（16:55 OOM KILL 实证，
+# VmPeak 1.6GB），机器 16GB 充裕，提到 1536M。
 CPUQuota=200%
-MemoryMax=768M
+MemoryMax=1536M
 # 加固
 NoNewPrivileges=true
 ProtectSystem=strict

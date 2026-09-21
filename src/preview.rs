@@ -26,6 +26,13 @@ const TYPE_MEDIA: u8 = 0x02;
 const CHANNEL_CAP: usize = 64;
 /// 看门狗：stdout 静默超过此时长 kill 重拉。
 const WATCHDOG: Duration = Duration::from_secs(3);
+/// 首段宽限：init 之后、第一个 media segment 之前用更长的静默容忍。
+/// ffmpeg `frag_keyframe` 须攒到首个关键帧才切首个 fragment——TP-LINK
+/// 子码流 GOP ~2.1s，实测 init(0.3s) → 首 moof(3.4s) 静默 3.1s 是确定性
+/// 时序（8 轮采样 3.39~3.51s 无抖动），3s 看门狗每轮都在首段前 ~0.1s
+/// 掐死 ffmpeg → 预览陷入杀-退避-再杀循环永不起（线上视频墙黑屏
+/// 根因）。首段就位后段间隔 ~1s，3s 足够。
+const WATCHDOG_FIRST: Duration = Duration::from_secs(10);
 /// ffmpeg 重启退避封顶（连续失败时降频，抄 ai-nvr）。
 const RESTART_CAP: Duration = Duration::from_secs(30);
 
@@ -168,7 +175,10 @@ impl PreviewStream {
         let mut parser = Fmp4Parser::new();
         let mut buf = vec![0u8; 128 * 1024];
         // 看门狗：deadline 制——每次收到数据顺延（interval 无 reset API，别用它）。
-        let mut deadline = tokio::time::Instant::now() + WATCHDOG;
+        // 首个 media segment 到达前用 WATCHDOG_FIRST（首个 fragment 需攒关键帧，
+        // GOP ~2.1s 时 init→首段静默 3.1s 是确定性时序，3s 必误杀——见常量注释）。
+        let mut got_first_media = false;
+        let mut deadline = tokio::time::Instant::now() + WATCHDOG_FIRST;
         loop {
             tokio::select! {
                 read = stdout.read(&mut buf) => match read {
@@ -187,6 +197,7 @@ impl PreviewStream {
                                     self.tx.send(msg).ok();
                                 }
                                 Fmp4Chunk::Media { data } => {
+                                    got_first_media = true;
                                     let msg = Arc::new(encode_media(&data));
                                     let mut lc = self.lifecycle.lock().await;
                                     lc.cached_media = Some(Arc::clone(&msg));
@@ -195,7 +206,8 @@ impl PreviewStream {
                                 }
                             }
                         }
-                        deadline = tokio::time::Instant::now() + WATCHDOG;
+                        let timeout = if got_first_media { WATCHDOG } else { WATCHDOG_FIRST };
+                        deadline = tokio::time::Instant::now() + timeout;
                     }
                 },
                 _ = tokio::time::sleep_until(deadline) => return PumpOutcome::Watchdog,

@@ -147,12 +147,18 @@ async fn stream_preview(
 
 /// 单个预览订阅会话：秒开缓存 → broadcast 转发循环。
 /// Lagged（慢客户端追不上）= 跳到最新——前端 catchUpToLive 兜底，直播语义可丢。
+///
+/// WS 断开感知：客户端不发数据，但 `socket.recv()` 在对端关闭时立即返回
+/// None/Err——与 `rx.recv()` select 竞争，断开即刻退出（调用方随后
+/// unsubscribe）。此前只在 rx 上 await：客户端关页后 future 永挂、
+/// subscribers 永不减、ffmpeg 永不停（线上泄漏实证）。
 async fn preview_session(
     mut socket: WebSocket,
     rx: &mut tokio::sync::broadcast::Receiver<Arc<Vec<u8>>>,
     cached_init: Option<Arc<Vec<u8>>>,
     cached_media: Option<Arc<Vec<u8>>>,
 ) {
+    use tokio::sync::broadcast::error::RecvError;
     if let Some(init) = cached_init {
         if !init.is_empty() && socket.send(Message::Binary(init.to_vec())).await.is_err() {
             return;
@@ -164,17 +170,26 @@ async fn preview_session(
         }
     }
     loop {
-        match rx.recv().await {
-            Ok(msg) => {
-                if msg.is_empty() {
-                    continue; // 新会话标记帧（不含数据）
-                }
-                if socket.send(Message::Binary(msg.to_vec())).await.is_err() {
-                    return;
+        tokio::select! {
+            // 对端关闭/出错即退（recv None/Err 是 WS 断开的唯一信号）
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(_)) => {} // 客户端不发言：ping 等控制帧忽略
+                    Some(Err(_)) | None => return,
                 }
             }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            msg = rx.recv() => match msg {
+                Ok(data) => {
+                    if data.is_empty() {
+                        continue; // 新会话标记帧（不含数据）
+                    }
+                    if socket.send(Message::Binary(data.to_vec())).await.is_err() {
+                        return;
+                    }
+                }
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => return,
+            },
         }
     }
 }
