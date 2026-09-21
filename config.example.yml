@@ -13,6 +13,8 @@ cameras:
       enabled: true
       width: 1280
       height: 720
+      # P8b 真实推理：指定 ONNX 模型（配 aivx-ort-yolo feature 编译生效；缺省回退运动桩）
+      model: /opt/aivx/data/models/yolov8n.onnx
     record:
       enabled: false
     snapshots:
@@ -32,6 +34,8 @@ cameras:
       enabled: true
       width: 1280
       height: 720
+      # P8b 真实推理：指定 ONNX 模型（配 aivx-ort-yolo feature 编译生效；缺省回退运动桩）
+      model: /opt/aivx/data/models/yolov8n.onnx
     record:
       enabled: true
       motion:
@@ -54,6 +58,8 @@ cameras:
       enabled: true
       width: 1280
       height: 720
+      # P8b 真实推理：指定 ONNX 模型（配 aivx-ort-yolo feature 编译生效；缺省回退运动桩）
+      model: /opt/aivx/data/models/yolov8n.onnx
     record:
       enabled: false
     snapshots:
@@ -73,6 +79,8 @@ cameras:
       enabled: true
       width: 1280
       height: 720
+      # P8b 真实推理：指定 ONNX 模型（配 aivx-ort-yolo feature 编译生效；缺省回退运动桩）
+      model: /opt/aivx/data/models/yolov8n.onnx
     record:
       enabled: true
       motion:

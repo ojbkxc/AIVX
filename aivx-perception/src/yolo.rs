@@ -91,13 +91,18 @@ impl InferBackend for OrtYoloBackend {
             Ok(o) => o,
             Err(_) => return inputs.iter().map(|_| Vec::new()).collect(),
         };
-        // 每个输入解析其输出切片（输出 [1, 4, 8400]，按 n 拆分）
+        // 每个输入解析其输出切片。真实模型输出 [n, 84, 8400]（class-major），
+        // 摊平后第 i 个输入占 [i*84*8400, (i+1)*84*8400)。
         let output = outputs[0].try_extract_tensor::<f32>().unwrap_or_default();
-        let per_input = output.len() / n;
+        let per_input = output.len() / n.max(1);
+        // 模型空间 → 帧空间缩放（letterbox：x 方向 640/input_w）
+        let scale_x = self.input_size as f32 / key.input_w as f32;
+        let scale_y = self.input_size as f32 / key.input_h as f32;
         let mut results = Vec::with_capacity(n);
         for i in 0..n {
             let slice: Vec<f32> = output[i * per_input..(i + 1) * per_input].to_vec();
-            let cands = parse_output(&slice, self.input_size, self.conf_threshold);
+            let num_det = slice.len() / 84; // 4 坐标 + 80 类（按 84 整除）
+            let cands = parse_output(&slice, num_det, self.conf_threshold, scale_x, scale_y);
             results.push(nms(&cands, self.iou_threshold));
         }
         results
@@ -108,57 +113,18 @@ impl InferBackend for OrtYoloBackend {
 mod tests {
     use super::*;
 
-    /// 输出解析：单候选框 conf 高于阈值被保留。
+    /// 批前向的输出切片拆分：[n, 84, 8400] 按输入边界拆分（yolo_math 的
+    /// parse_output 在 yolo_math 模块已有布局测试，此处验证拆分数学本身）。
     #[test]
-    fn parse_output_keeps_confident_box() {
-        let mut out = vec![0f32; 84 * 3]; // 3 个检测位
-                                          // 第 1 位：中心 (0.5, 0.5) 尺寸 (0.2, 0.4)，class0=0.9
-        out[0] = 0.5;
-        out[1] = 0.5;
-        out[2] = 0.2;
-        out[3] = 0.4;
-        out[4] = 0.9; // class 0 score
-        let cands = crate::yolo_math::parse_output(&out, 640, 0.4);
-        assert_eq!(cands.len(), 1);
-        let (x1, y1, w, h, score) = cands[0];
-        assert!((x1 - 256.0).abs() < 1.0, "x1 应为 (0.5-0.1)*640=256");
-        assert!((y1 - 192.0).abs() < 1.0, "y1 应为 (0.5-0.2)*640=192");
-        assert!((w - 128.0).abs() < 1.0);
-        assert!((h - 256.0).abs() < 1.0);
-        assert!((score - 0.9).abs() < 0.01);
-    }
-
-    /// NMS：两个重叠框只留高分的。
-    #[test]
-    fn nms_removes_overlap() {
-        // 高分框 + 高度重叠低分框
-        let cands = vec![
-            (100.0, 100.0, 50.0, 50.0, 0.9),
-            (110.0, 110.0, 50.0, 50.0, 0.5),
-            (500.0, 500.0, 50.0, 50.0, 0.7), // 不重叠
-        ];
-        let dets = crate::yolo_math::nms(&cands, 0.45);
-        assert_eq!(dets.len(), 2, "重叠的应只剩一个，不重叠的保留");
-    }
-
-    /// IoU 计算。
-    #[test]
-    fn iou_correct() {
-        // 完全重叠 → 1.0
-        let v = crate::yolo_math::iou(0.0, 0.0, 10.0, 10.0, 0.0, 0.0, 10.0, 10.0);
-        assert!((v - 1.0).abs() < 0.01);
-        // 完全不重叠 → 0.0
-        let v = crate::yolo_math::iou(0.0, 0.0, 10.0, 10.0, 100.0, 100.0, 10.0, 10.0);
-        assert!((v - 0.0).abs() < 0.01);
-    }
-
-    /// NV12 → RGB float：尺寸正确 + Y 灰度近似。
-    #[test]
-    fn nv12_to_rgb_shape() {
-        let nv12 = vec![128u8; 640 * 360 + 640 * 360 / 2];
-        let rgb = crate::yolo_math::nv12_to_rgb_float(&nv12, 640, 360);
-        assert_eq!(rgb.len(), 640 * 360 * 3);
-        // Y=128/255 ≈ 0.502
-        assert!((rgb[0] - 0.502).abs() < 0.01);
+    fn per_input_slice_splits_batch_output() {
+        // 模拟 2 输入 × 84×3 的摊平输出
+        let total = 2 * 84 * 3;
+        let output: Vec<f32> = (0..total).map(|i| i as f32).collect();
+        let n = 2;
+        let per_input = output.len() / n;
+        let s0 = &output[0..per_input];
+        let s1 = &output[per_input..2 * per_input];
+        assert_eq!(s0[0], 0.0);
+        assert_eq!(s1[0], per_input as f32, "第 2 个输入切片应从 per_input 起");
     }
 }

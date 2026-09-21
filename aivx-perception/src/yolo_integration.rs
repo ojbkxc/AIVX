@@ -35,7 +35,9 @@ fn real_ort_yolo_runs_forward_pass() {
     let model_path = model_dir.join("yolov8n.onnx");
     if !model_path.exists() {
         download_model(
-            "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.onnx",
+            // 标准 ultralytics 导出（[1,84,8400]，class-major——与 yolo_math
+            // parse_output 的布局实测对齐；宿主部署在 /opt/aivx/data/models/）
+            "https://raw.githubusercontent.com/JasonLin1110/ultralytics_yolov8_onnx_model/main/yolov8net.onnx",
             &model_path,
         )
         .expect("应能下载 YOLOv8n.onnx");

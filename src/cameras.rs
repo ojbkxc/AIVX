@@ -83,6 +83,10 @@ pub struct DetectYaml {
     pub width: usize,
     #[serde(default = "default_h")]
     pub height: usize,
+    /// ONNX 模型路径（P8b YOLO 接线）——指定则 T2 用 PoolAnalyzer
+    /// （OrtYoloBackend 真实推理）；缺省回退 MotionStubAnalyzer。
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 fn default_w() -> usize {
@@ -131,6 +135,51 @@ impl RecordYaml {
 /// （已实测两台机器四路子码流全部 h264 640x360 可拉）。已是 stream2 的原样返回。
 fn sub_stream_url(main: &str) -> String {
     main.replacen("stream1", "stream2", 1)
+}
+
+/// 构造 T2 推理后端（P8b YOLO 接线）。
+///
+/// - `detect.model` 指定 ONNX 且 `ort-yolo` feature 启用：真实推理
+///   （PoolAnalyzer → DetectorPool → OrtYoloBackend，跨路共享一个池）。
+/// - 其余情况（未配模型 / feature 未编译 / 模型加载失败）：None → 调用方
+///   回退 MotionStubAnalyzer（检测链路保持可跑——不因模型缺失白屏）。
+///
+/// 池全局共享一份（所有摄像头跨路攒批——DESIGN.md §4）；首次构造时建池，
+/// 失败（如 ort 运行时库缺失）打日志降级为桩。
+#[cfg(feature = "aivx-ort-yolo")]
+fn make_analyzer(
+    model_path: Option<String>,
+    frame_w: usize,
+    frame_h: usize,
+) -> Option<aivx_perception::pool_adapter::PoolAnalyzer> {
+    let path = model_path?;
+    let backend = match aivx_perception::yolo::OrtYoloBackend::new(&path, 0.4, 0.45) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("AIVX: YOLO 模型加载失败，T2 回退 MotionStubAnalyzer: {e}");
+            return None;
+        }
+    };
+    let key = aivx_perception::pool::EngineKey {
+        model_id: "default".into(),
+        device: "cpu".into(),
+        input_w: frame_w as u32,
+        input_h: frame_h as u32,
+    };
+    let pool = std::sync::Arc::new(aivx_perception::pool::DetectorPool::new(backend));
+    let worker = pool.clone();
+    std::thread::spawn(move || worker.run_worker());
+    Some(aivx_perception::pool_adapter::PoolAnalyzer::new(pool, key))
+}
+
+/// feature 未编译：恒 None（回退桩——CI 默认无 ort 依赖）。
+#[cfg(not(feature = "aivx-ort-yolo"))]
+fn make_analyzer(
+    _model_path: Option<String>,
+    _frame_w: usize,
+    _frame_h: usize,
+) -> Option<std::convert::Infallible> {
+    None
 }
 
 // ── 运行时编排 ────────────────────────────────────────────────
@@ -232,21 +281,39 @@ impl CameraManager {
                     .name(format!("cam-{name}-t1-decode"))
                     .spawn(move || aivx_perception::stream::decode_loop(cfg, slot, bridge))?;
             }
-            // T2 分析线程（Arc 共享 slot——只读路径 + latest-wins 语义）
+            // T2 分析线程（Arc 共享 slot——只读路径 + latest-wins 语义）。
+            // P8b 推理后端选择：detect.model 指定 ONNX 且 ort-yolo feature
+            // 编译时用真实 YOLO（PoolAnalyzer → DetectorPool → OrtYoloBackend）；
+            // 否则回退 MotionStubAnalyzer（无模型环境/CI 保持可跑）。
             {
                 let bridge = bridge.clone();
                 let slot = slot_t2;
                 let device_id = device_id.clone();
-                std::thread::Builder::new()
-                    .name(format!("cam-{name}-t2-analyze"))
-                    .spawn(move || {
-                        aivx_perception::analyze::analysis_loop(
-                            device_id,
-                            slot,
-                            bridge,
-                            MotionStubAnalyzer,
-                        )
-                    })?;
+                let model_path = cam.detect.model.clone();
+                let t2_name = format!("cam-{name}-t2-analyze");
+                match make_analyzer(model_path, cam.detect.width, cam.detect.height) {
+                    Some(analyzer) => {
+                        std::thread::Builder::new()
+                            .name(t2_name)
+                            .spawn(move || {
+                                aivx_perception::analyze::analysis_loop(
+                                    device_id, slot, bridge, analyzer,
+                                )
+                            })?;
+                    }
+                    None => {
+                        std::thread::Builder::new()
+                            .name(t2_name)
+                            .spawn(move || {
+                                aivx_perception::analyze::analysis_loop(
+                                    device_id,
+                                    slot,
+                                    bridge,
+                                    MotionStubAnalyzer,
+                                )
+                            })?;
+                    }
+                }
             }
 
             // T3 录像线程（I4 物理隔离；mode=off 不拉起——对齐用户配置：

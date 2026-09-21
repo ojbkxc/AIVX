@@ -6,33 +6,50 @@
 
 use crate::pool::Det;
 
-/// 解析 YOLOv8 输出（1×4×8400）→ 候选框（conf > threshold）。
-/// 输出布局：4 = x_center, y_center, w, h + 80 class scores。
-pub fn parse_output(output: &[f32], input_size: u32, conf: f32) -> Vec<(f32, f32, f32, f32, f32)> {
-    let stride = 4 + 80; // 4 坐标 + 80 COCO 类
-    let num_det = output.len() / stride;
+/// 解析 YOLOv8 输出 → 候选框（conf > threshold）。
+///
+/// 布局对真实 ultralytics 导出 yolov8n.onnx（[1, 84, 8400]）实测验证：
+/// **class-major** 摊平（index = c * num_det + d），不是 det-major——
+/// 检测 d 的 4 坐标在 output[d] / output[num_det+d] / …，类分数在
+/// output[(4+c)*num_det + d]。坐标是模型输入空间（640×640）的**像素值**
+/// （实测范围 2.7~637），中心格式 cx/cy/w/h——不再是归一化（旧实现的
+/// `*input_size` 放大是 bug）。
+///
+/// `scale_x/scale_y`：模型 640 空间 → 帧空间缩放（720p 帧则 2.0 / 1.125）。
+/// 返回左上角格式（x1/y1/w/h）——nms 的 iou 按此约定。
+pub fn parse_output(
+    output: &[f32],
+    num_det: usize,
+    conf: f32,
+    scale_x: f32,
+    scale_y: f32,
+) -> Vec<(f32, f32, f32, f32, f32)> {
+    if num_det == 0 {
+        return Vec::new();
+    }
+    let num_classes = output.len() / num_det - 4;
     let mut candidates = Vec::new();
-    for i in 0..num_det {
-        let base = i * stride;
-        let cx = output[base];
-        let cy = output[base + 1];
-        let w = output[base + 2];
-        let h = output[base + 3];
-        // 找最高类分数
+    for d in 0..num_det {
+        let cx = output[d];
+        let cy = output[num_det + d];
+        let w = output[2 * num_det + d];
+        let h = output[3 * num_det + d];
+        // 找最高类分数（已 sigmoid——实测灰图 max≈0.0008，有目标≈0.89）
         let mut best_score = 0f32;
-        for c in 4..stride {
-            let s = output[base + c];
+        for c in 4..4 + num_classes {
+            let s = output[c * num_det + d];
             if s > best_score {
                 best_score = s;
             }
         }
         if best_score >= conf {
-            // 坐标从归一化 → 像素
-            let x1 = (cx - w / 2.0) * input_size as f32;
-            let y1 = (cy - h / 2.0) * input_size as f32;
-            let bw = w * input_size as f32;
-            let bh = h * input_size as f32;
-            candidates.push((x1, y1, bw, bh, best_score));
+            candidates.push((
+                (cx - w / 2.0) * scale_x,
+                (cy - h / 2.0) * scale_y,
+                w * scale_x,
+                h * scale_y,
+                best_score,
+            ));
         }
     }
     candidates
@@ -82,42 +99,103 @@ pub fn nms(candidates: &[(f32, f32, f32, f32, f32)], iou_threshold: f32) -> Vec<
     kept
 }
 
-/// NV12 → RGB float（ort 输入）。Y 平面灰度近似（真实 YOLO 需完整转换）。
+/// NV12 → RGB float（ort 输入，letterbox 到 640×640）。
+///
+/// 完整 YUV→RGB（BT.601）+ 长边缩放到 640 + 短边中心补灰（letterbox 保
+/// 纵横比——ultralytics 推理的输入约定）。返回 640*640*3（模型输入 shape）。
 pub fn nv12_to_rgb_float(nv12: &[u8], w: u32, h: u32) -> Vec<f32> {
-    let mut rgb = vec![0f32; (w * h * 3) as usize];
     let y_size = (w * h) as usize;
-    let (y_plane, _uv) = nv12.split_at(y_size);
-    for i in 0..y_size {
-        let y = y_plane[i] as f32 / 255.0;
-        rgb[i * 3] = y;
-        rgb[i * 3 + 1] = y;
-        rgb[i * 3 + 2] = y;
+    if nv12.len() < y_size * 3 / 2 || w == 0 || h == 0 {
+        return vec![0f32; 640 * 640 * 3];
     }
-    rgb
+    let (y_plane, uv) = nv12.split_at(y_size);
+    // 目标：长边 640，短边按比例（偶数对齐），垂直居中
+    let scale = 640.0 / w.max(h) as f32;
+    let tw = (w as f32 * scale).round().max(1.0) as usize;
+    let th = (h as f32 * scale).round().max(1.0) as usize;
+    let mut out = vec![0.5f32; 640 * 640 * 3]; // 补灰（0.5 ≈ 128/255）
+    for dy in 0..th.min(640) {
+        let sy = ((dy as f32) / scale) as usize;
+        let sy = sy.min(h as usize - 1);
+        for dx in 0..tw.min(640) {
+            let sx = ((dx as f32) / scale) as usize;
+            let sx = sx.min(w as usize - 1);
+            // 最近邻取点 + BT.601 YUV→RGB
+            let y = y_plane[sy * w as usize + sx] as f32;
+            let vi = (sy / 2) * (w as usize / 2) + sx / 2;
+            let (u, v) = if vi * 2 + 1 < uv.len() {
+                (uv[vi * 2] as f32, uv[vi * 2 + 1] as f32)
+            } else {
+                (128.0, 128.0)
+            };
+            let c = y - 16.0;
+            let d = u - 128.0;
+            let e = v - 128.0;
+            let r = (1.164 * c + 1.596 * e).clamp(0.0, 255.0) / 255.0;
+            let g = (1.164 * c - 0.392 * d - 0.813 * e).clamp(0.0, 255.0) / 255.0;
+            let b = (1.164 * c + 2.017 * d).clamp(0.0, 255.0) / 255.0;
+            let o = (dy * 640 + dx) * 3;
+            out[o] = r;
+            out[o + 1] = g;
+            out[o + 2] = b;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 输出解析：单候选框 conf 高于阈值被保留。
+    /// 输出解析（class-major 布局）：单候选框 conf 高于阈值被保留。
+    ///
+    /// 布局按真实 yolov8n.onnx 实测（[1,84,8400] 摊平 → c*8400+d）：
+    /// 2 个检测位、4+1 类（用小类数验证索引数学，不依赖 80 类全量）。
     #[test]
     fn parse_output_keeps_confident_box() {
-        let mut out = vec![0f32; 84 * 3]; // 3 个检测位
-                                          // 第 1 位：中心 (0.5, 0.5) 尺寸 (0.2, 0.4)，class0=0.9
-        out[0] = 0.5;
-        out[1] = 0.5;
-        out[2] = 0.2;
-        out[3] = 0.4;
-        out[4] = 0.9; // class 0 score
-        let cands = parse_output(&out, 640, 0.4);
-        assert_eq!(cands.len(), 1);
+        let num_det = 2;
+        let num_classes = 1; // 4 坐标 + 1 类 → len = 5*2
+        let mut out = vec![0f32; (4 + num_classes) * num_det];
+        // det 0：中心 (320, 320) 尺寸 (100, 200)——像素值（模型 640 空间）
+        out[0] = 320.0;
+        out[num_det] = 320.0;
+        out[2 * num_det] = 100.0;
+        out[3 * num_det] = 200.0;
+        out[4 * num_det] = 0.9; // class 0 score（class-major：c=4 → 4*2+0）
+        // det 1：低分——被阈值过滤
+        out[1] = 100.0;
+        out[num_det + 1] = 100.0;
+        out[2 * num_det + 1] = 50.0;
+        out[3 * num_det + 1] = 50.0;
+        out[4 * num_det + 1] = 0.1;
+        let cands = parse_output(&out, num_det, 0.4, 1.0, 1.0);
+        assert_eq!(cands.len(), 1, "低分 det 应被阈值过滤");
         let (x1, y1, w, h, score) = cands[0];
-        assert!((x1 - 256.0).abs() < 1.0, "x1 应为 (0.5-0.1)*640=256");
-        assert!((y1 - 192.0).abs() < 1.0, "y1 应为 (0.5-0.2)*640=192");
-        assert!((w - 128.0).abs() < 1.0);
-        assert!((h - 256.0).abs() < 1.0);
+        assert!((x1 - 270.0).abs() < 1.0, "x1 应为 320-100/2=270");
+        assert!((y1 - 220.0).abs() < 1.0, "y1 应为 320-200/2=220");
+        assert!((w - 100.0).abs() < 1.0);
+        assert!((h - 200.0).abs() < 1.0);
         assert!((score - 0.9).abs() < 0.01);
+    }
+
+    /// 输出解析：scale 缩放（模型 640 → 720p 帧，x 方向 /640*1280）。
+    #[test]
+    fn parse_output_scales_to_frame_space() {
+        let num_det = 1;
+        let mut out = vec![0f32; 5]; // 4 坐标 + 1 类
+        out[0] = 320.0; // cx
+        out[1] = 180.0; // cy（num_det=1 时 cy 在 index 1）
+        out[2] = 64.0; // w
+        out[3] = 32.0; // h
+        out[4] = 0.8; // score
+        // 640×360 模型空间 → 1280×720 帧空间：scale 2.0/2.0
+        let cands = parse_output(&out, num_det, 0.4, 2.0, 2.0);
+        assert_eq!(cands.len(), 1);
+        let (x1, y1, w, h, _) = cands[0];
+        assert!((x1 - 576.0).abs() < 1.0, "x1=(320-32)*2=576");
+        assert!((y1 - 328.0).abs() < 1.0, "y1=(180-16)*2=328");
+        assert!((w - 128.0).abs() < 1.0);
+        assert!((h - 64.0).abs() < 1.0);
     }
 
     /// NMS：两个重叠框只留高分的。
@@ -144,13 +222,43 @@ mod tests {
         assert!((v - 0.0).abs() < 0.01);
     }
 
-    /// NV12 → RGB float：尺寸正确 + Y 灰度近似。
+    /// NV12 → RGB float：输出恒为 640×640×3（模型输入 shape）+ 灰帧 BT.601。
     #[test]
     fn nv12_to_rgb_shape() {
         let nv12 = vec![128u8; 640 * 360 + 640 * 360 / 2];
         let rgb = nv12_to_rgb_float(&nv12, 640, 360);
-        assert_eq!(rgb.len(), 640 * 360 * 3);
-        // Y=128/255 ≈ 0.502
-        assert!((rgb[0] - 0.502).abs() < 0.01);
+        assert_eq!(rgb.len(), 640 * 640 * 3, "输出必须是模型输入 shape");
+        // Y=128 U=V=128 → BT.601 RGB ≈ (135,135,135)/255 ≈ 0.53
+        // 中心行（360 高 letterbox 居中在 640）应在有效区
+        let cy = 320; // letterbox 垂直中心
+        let cx = 320;
+        let px = (cy * 640 + cx) * 3;
+        assert!((rgb[px] - 0.53).abs() < 0.05, "中心像素应为灰 {:?}", &rgb[px..px + 3]);
+        // letterbox 上下边应为补灰 0.5
+        let top = (10 * 640 + 320) * 3;
+        assert!((rgb[top] - 0.5).abs() < 0.01, "letterbox 区应为 0.5 补灰");
+    }
+
+    /// NV12 → RGB：色度渲染（U 偏移 → B 通道变化）。
+    #[test]
+    fn nv12_to_rgb_chroma() {
+        let w = 4u32;
+        let h = 4u32;
+        let mut nv12 = vec![128u8; (w * h * 3 / 2) as usize];
+        // U=64（偏蓝方向）
+        for i in ((w * h) as usize)..((w * h * 3 / 2) as usize) {
+            if (i - (w * h) as usize) % 2 == 0 {
+                nv12[i] = 64;
+            }
+        }
+        let rgb = nv12_to_rgb_float(&nv12, w, h);
+        // 4x4 → scale 160 → 全图 640；中心点应偏蓝（B > R）
+        let c = (320 * 640 + 320) * 3;
+        assert!(
+            rgb[c + 2] > rgb[c],
+            "U 偏低应偏蓝：B={:.3} R={:.3}",
+            rgb[c + 2],
+            rgb[c]
+        );
     }
 }

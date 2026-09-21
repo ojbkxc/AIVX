@@ -28,13 +28,52 @@ license-file = "LICENSE"
 aivx-events = { path = "aivx-events" }
 aivx-perception = { path = "aivx-perception" }
 aivx-net = { path = "aivx-net" }
-tokio = { version = "1", features = ["full"] }
-serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-anyhow = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-base64 = "0.22"
-axum = { version = "0.7", features = ["macros", "ws"] }
-tower-http = { version = "0.5", features = ["fs", "trace"] }
-serde_yaml = "0.9"
+
+[features]
+# 生产推理：转发 aivx-perception 的 ort-yolo（真实 ONNX 推理）。
+# CI 默认不启用（ort 重依赖 + ONNX Runtime 库下载）；部署 build 用
+# `--features aivx-ort-yolo` 编真实 YOLO。
+aivx-ort-yolo = ["aivx-perception/ort-yolo"]
+
+[lib]
+name = "aivx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aivx"
+path = "src/main.rs"
+
+[dependencies.tokio]
+version = "1"
+features = ["full"]
+
+[dependencies.serde]
+workspace = true
+
+[dependencies.serde_json]
+workspace = true
+
+[dependencies.thiserror]
+workspace = true
+
+[dependencies.anyhow]
+workspace = true
+
+[dependencies.reqwest]
+version = "0.12"
+default-features = false
+features = ["blocking", "json", "rustls-tls"]
+
+[dependencies.base64]
+version = "0.22"
+
+[dependencies.axum]
+version = "0.7"
+features = ["macros", "ws"]
+
+[dependencies.tower-http]
+version = "0.5"
+features = ["fs", "trace"]
+
+[dependencies.serde_yaml]
+version = "0.9"
