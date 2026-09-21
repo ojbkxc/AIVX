@@ -295,9 +295,9 @@ impl CameraManager {
                 match make_analyzer(model_path, cam.detect.width, cam.detect.height) {
                     Some(analyzer) => {
                         let run = aivx_perception::analyze::analysis_loop;
-                        std::thread::Builder::new().name(t2_name).spawn(move || {
-                            run(device_id, slot, bridge, analyzer)
-                        })?;
+                        std::thread::Builder::new()
+                            .name(t2_name)
+                            .spawn(move || run(device_id, slot, bridge, analyzer))?;
                     }
                     None => {
                         std::thread::Builder::new().name(t2_name).spawn(move || {
