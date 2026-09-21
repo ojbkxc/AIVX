@@ -33,8 +33,11 @@ aivx-net = { path = "aivx-net" }
 # 生产推理：转发 aivx-perception 的 ort-yolo（真实 ONNX 推理）。
 # CI 默认不启用（ort 重依赖）；部署 build 用 `--features aivx-ort-yolo-dynamic`
 # 编真实 YOLO（load-dynamic：编译不链 native 库，运行时 ORT_DYLIB_PATH 加载）。
+# 注意：dynamic 必须同时开主 crate 的 aivx-ort-yolo——cameras.rs 的
+# make_analyzer cfg 门是主 crate 自己的 feature（线上实证：漏开它 → ort
+# 编进依赖图但 make_analyzer 走桩分支，YOLO 静默不生效）。
 aivx-ort-yolo = ["aivx-perception/ort-yolo"]
-aivx-ort-yolo-dynamic = ["aivx-perception/ort-yolo-dynamic"]
+aivx-ort-yolo-dynamic = ["aivx-ort-yolo", "aivx-perception/ort-yolo-dynamic"]
 
 [lib]
 name = "aivx"
