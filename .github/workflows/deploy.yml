@@ -24,7 +24,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Regenerate lock with download-binaries deps
-        run: cargo generate-lockfile --features aivx-ort-yolo-download
+        # cargo metadata 解析全 feature 依赖图并写 Cargo.lock（无 --dry-run 修饰）。
+        # 手工 lock 曾在 --locked 下红——以 cargo 生成结果为权威。
+        run: cargo metadata --features aivx-ort-yolo-download --format-version 1 > /dev/null
       - name: Upload lock
         uses: actions/upload-artifact@v4
         with:
