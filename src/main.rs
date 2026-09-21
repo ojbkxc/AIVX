@@ -70,10 +70,6 @@ struct ApiState {
     agent: Arc<AgentState>,
 }
 
-impl ApiState {
-    /// 保留占位（smoke_event_chain 直接用 state.db）。
-}
-
 /// Agent 运维会话（P8e：单会话内存存根；SessionStore 持消息历史）。
 struct AgentState {
     ctx: aivx::agent::ActionContext,
