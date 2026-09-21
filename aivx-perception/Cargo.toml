@@ -14,17 +14,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 # ort YOLO 后端（P8）——重依赖，feature gate 隔离（CI 默认不编译）。
-# ort 默认 features 含 download-binaries（下载预编译 ONNX Runtime，需网络）。
-# CI 沙箱无网 → 编译失败。显式指定 features 去掉 download-binaries，
-# 保留 Session API 所需（api-27 + ndarray + std）。本地有网环境可加回
-# download-binaries 自动下载 ONNX Runtime。
 [features]
 ort-yolo = ["dep:ort"]
-# ort-yolo + download-binaries：CI/部署构建用——build.rs 自动下载预编译
-# ONNX Runtime（默认 ort-yolo 不带它，需系统库；CI runner 无系统 onnxruntime）。
-# download-binaries 走 https 下载，必须配 TLS feature（ort-sys 有
-# compile_error! 强制）——tls-rustls 用 ring provider，纯 Rust 无系统依赖。
-ort-yolo-download = ["ort-yolo", "ort/download-binaries", "ort/tls-rustls"]
+# ort-yolo + load-dynamic：生产构建用——编译期不链 ONNX Runtime native 库
+# （ort/load-dynamic → ort-sys/disable-linking，build.rs 直接 return），
+# 运行时按 ORT_DYLIB_PATH dlopen libonnxruntime.so。
+# 为什么弃 download-binaries：ort.pyke.io 预编译库按 glibc 2.38+ 构建
+# （__isoc23_strtoll 等符号），ubuntu-22.04 runner=2.35 链接失败、目标机
+# Debian 12=2.36 运行失败——双重死结。load-dynamic 把 native 库选择权移到
+# 部署侧：CI 下载 onnxruntime 官方 release（linux-x64 包 glibc 2.28+ 兼容）
+# 随 bundle 分发，systemd 设 ORT_DYLIB_PATH。
+# load-dynamic 不激活 download-binaries → ureq/TLS 不参与编译，无 TLS 约束。
+ort-yolo-dynamic = ["ort-yolo", "ort/load-dynamic"]
 
 [dependencies.ort]
 version = "2.0.0-rc.13"

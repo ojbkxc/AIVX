@@ -10,10 +10,15 @@ SERVICE_DST=/etc/systemd/system/aivx.service
 
 echo "==> 安装到 ${DEST}"
 mkdir -p "${DEST}"
-# bundle 布局：./aivx/{aivx, static/} + ./aivx.service + ./install.sh
+# bundle 布局：./aivx/{aivx, static/, lib/} + ./aivx.service + ./install.sh
 install -m 0755 aivx/aivx "${DEST}/aivx"
 mkdir -p "${DEST}/static"
 cp -r aivx/static/. "${DEST}/static/"
+# ONNX Runtime 动态库（P8b load-dynamic，systemd ORT_DYLIB_PATH 指向它）
+if [ -d aivx/lib ]; then
+  mkdir -p "${DEST}/lib"
+  cp -a aivx/lib/. "${DEST}/lib/"
+fi
 
 echo "==> 安装 systemd 单元"
 install -m 0644 "${SERVICE_SRC}" "${SERVICE_DST}"

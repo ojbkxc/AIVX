@@ -15,6 +15,9 @@ RestartSec=3
 Environment=AIVX_DATA_DIR=/opt/aivx/data
 # 前端静态资源目录
 Environment=AIVX_STATIC_DIR=/opt/aivx/static
+# ONNX Runtime 动态库（P8b load-dynamic：运行时 dlopen；官方 1.28.2
+# linux-x64 包随 bundle 落 /opt/aivx/lib/——ort rc.13 绑 ORT API 1.28）
+Environment=ORT_DYLIB_PATH=/opt/aivx/lib/libonnxruntime.so
 # 监听端口（用户指定 18443）
 Environment=AIVX_PORT=18443
 # 资源护栏：8 路预算 1.5 核 / 512MB（DESIGN.md §21 性能预算）

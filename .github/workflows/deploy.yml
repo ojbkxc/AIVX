@@ -23,10 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Regenerate lock with download-binaries deps
+      - name: Regenerate lock with load-dynamic deps
         # cargo metadata 解析全 feature 依赖图并写 Cargo.lock（无 --dry-run 修饰）。
         # 手工 lock 曾在 --locked 下红——以 cargo 生成结果为权威。
-        run: cargo metadata --features aivx-ort-yolo-download --format-version 1 > /dev/null
+        run: cargo metadata --features aivx-ort-yolo-dynamic --format-version 1 > /dev/null
       - name: Upload lock
         uses: actions/upload-artifact@v4
         with:
@@ -39,10 +39,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # P8b：生产包带真实 YOLO 推理（aivx-ort-yolo-download → ort
-      # download-binaries 自动拉 ONNX Runtime 库并打包进 bundle）。
-      - name: Build release (with YOLO)
-        run: cargo build --release --locked --features aivx-ort-yolo-download
+      # P8b：生产包带真实 YOLO 推理（aivx-ort-yolo-dynamic → ort load-dynamic：
+      # 编译不链 native 库——绕开 ort.pyke.io 预编译库 glibc 2.38+ 与
+      # runner 2.35 / 目标机 Debian 12 glibc 2.36 的双重不兼容）。
+      # libonnxruntime.so 在 Assemble 步骤单独下载官方 1.28.2（ort rc.13
+      # 绑 ONNX Runtime 1.28，glibc 2.28+ 兼容）随 bundle 分发。
+      - name: Build release (with YOLO, dynamic load)
+        run: cargo build --release --locked --features aivx-ort-yolo-dynamic
       - name: Build frontend
         run: |
           npm ci --prefix frontend
@@ -60,6 +63,16 @@ jobs:
             sleep 0.2
           done
           echo "::error::healthz 10s 未就绪"; kill $PID; exit 1
+      - name: Fetch ONNX Runtime (dynamic dylib)
+        # ort rc.13 绑 ONNX Runtime 1.28 → 官方 release 1.28.2 linux-x64
+        # （最低 glibc 2.28，Debian 12=2.36 可跑）。load-dynamic 运行时经
+        # ORT_DYLIB_PATH dlopen 这个 .so——lib/ 布局随 bundle 分发。
+        run: |
+          curl -fsSL --retry 3 -o ort.tgz \
+            https://github.com/microsoft/onnxruntime/releases/download/v1.28.2/onnxruntime-linux-x64-1.28.2.tgz
+          tar -xzf ort.tgz
+          mkdir -p bundle/aivx/lib
+          cp onnxruntime-linux-x64-1.28.2/lib/libonnxruntime.so* bundle/aivx/lib/
       - name: Assemble bundle
         run: |
           mkdir -p bundle/aivx
