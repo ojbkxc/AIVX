@@ -44,6 +44,8 @@ pub struct Det {
     pub y: u32,
     pub w: u32,
     pub h: u32,
+    /// 最高分类别号（COCO 80 类索引；桩后端 = u32::MAX 表示"未知/运动"）。
+    pub class: u32,
 }
 
 /// 引擎键（模型选择依据——DESIGN.md §4 ADR-025：按模型键缓存/攒批）。
@@ -175,6 +177,7 @@ impl InferBackend for SyncStubBackend {
                     y: 9,
                     w: 32,
                     h: 18,
+                    class: u32::MAX, // 桩：未知类别
                 }]
             })
             .collect()
@@ -213,7 +216,8 @@ mod tests {
                 x: 16,
                 y: 9,
                 w: 32,
-                h: 18
+                h: 18,
+                class: u32::MAX
             }
         );
 
@@ -255,7 +259,8 @@ mod tests {
                 x: 16,
                 y: 9,
                 w: 32,
-                h: 18
+                h: 18,
+                class: u32::MAX
             }
         );
     }

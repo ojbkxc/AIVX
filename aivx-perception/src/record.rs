@@ -247,7 +247,8 @@ mod tests {
         assert!(args.contains("-c copy"));
         assert!(args.contains("-f segment"));
         assert!(args.contains("-segment_time 600"));
-        assert!(args.contains("/tmp/rec/dev-1/"));
+        // PathBuf 分隔符随平台（Linux '/' / Windows '\'）——normalize 后断言
+        assert!(args.replace('\\', "/").contains("/tmp/rec/dev-1/"));
     }
 
     /// 段扫描：发现新文件发事件一次，重复扫描不重发（幂等）。

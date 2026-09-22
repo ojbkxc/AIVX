@@ -64,7 +64,8 @@ mod tests {
                 x: 16,
                 y: 9,
                 w: 32,
-                h: 18
+                h: 18,
+                class: u32::MAX
             }
         );
     }

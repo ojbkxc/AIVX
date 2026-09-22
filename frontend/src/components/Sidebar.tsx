@@ -5,7 +5,7 @@ import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   MonitorPlay, Siren, PlayCircle, Cctv, ShieldAlert, Bot,
-  Menu, PanelLeftClose, PanelLeftOpen, Sun, Moon, Monitor,
+  Menu, PanelLeftClose, PanelLeftOpen, Sun, Moon, Monitor, LogOut,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import MobileDrawer from './MobileDrawer';
@@ -58,10 +58,13 @@ interface SidebarContentProps {
   onToggleCollapsed: () => void;
   /** 移动端抽屉形态：隐藏收缩按钮（抽屉本身即开合） */
   isDrawer: boolean;
+  /** 登出回调（鉴权未启用时不渲染登出按钮） */
+  authEnabled: boolean;
+  onLogout?: () => void;
 }
 
 /** 侧栏内容（桌面常驻 / 移动抽屉共用） */
-function SidebarContent({ collapsed, onToggleCollapsed, isDrawer }: SidebarContentProps): JSX.Element {
+function SidebarContent({ collapsed, onToggleCollapsed, isDrawer, authEnabled, onLogout }: SidebarContentProps): JSX.Element {
   const [theme, setTheme] = React.useState<ThemeMode>(getThemeMode());
 
   const toggleTheme = (): void => {
@@ -124,7 +127,7 @@ function SidebarContent({ collapsed, onToggleCollapsed, isDrawer }: SidebarConte
         </button>
       )}
 
-      {/* Footer：主题三态切换行（AIGX 用户区的无登录替代） */}
+      {/* Footer：主题三态切换行 + 登出（鉴权启用时） */}
       <div className="sidebar-footer">
         <button
           type="button"
@@ -135,12 +138,24 @@ function SidebarContent({ collapsed, onToggleCollapsed, isDrawer }: SidebarConte
           <ThemeIcon size={15} strokeWidth={1.8} />
           <span>{THEME_META[theme].label}</span>
         </button>
+        {authEnabled && (
+          <button
+            type="button"
+            className="theme-toggle-btn"
+            onClick={onLogout}
+            title="退出登录"
+            data-testid="logout-btn"
+          >
+            <LogOut size={15} strokeWidth={1.8} />
+            <span>退出登录</span>
+          </button>
+        )}
       </div>
     </aside>
   );
 }
 
-export function Sidebar(): JSX.Element {
+export function Sidebar({ authEnabled = false, onLogout }: { authEnabled?: boolean; onLogout?: () => void }): JSX.Element {
   const location = useLocation();
   // 移动端抽屉开关：仅 ≤768px 由汉堡按钮触发
   const [mobileOpen, setMobileOpen] = React.useState<boolean>(false);
@@ -185,11 +200,11 @@ export function Sidebar(): JSX.Element {
       </button>
       {/* 桌面端常驻侧栏（≤768px 由 CSS 隐藏） */}
       <div className="sidebar-desktop">
-        <SidebarContent collapsed={collapsed} onToggleCollapsed={toggleCollapsed} isDrawer={false} />
+        <SidebarContent collapsed={collapsed} onToggleCollapsed={toggleCollapsed} isDrawer={false} authEnabled={authEnabled} onLogout={onLogout} />
       </div>
       {/* 移动端抽屉（恒为展开形态） */}
       <MobileDrawer open={mobileOpen} onClose={() => setMobileOpen(false)} ariaLabel="导航菜单">
-        <SidebarContent collapsed={false} onToggleCollapsed={toggleCollapsed} isDrawer />
+        <SidebarContent collapsed={false} onToggleCollapsed={toggleCollapsed} isDrawer authEnabled={authEnabled} onLogout={onLogout} />
       </MobileDrawer>
     </>
   );

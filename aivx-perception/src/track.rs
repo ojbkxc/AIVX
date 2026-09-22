@@ -25,6 +25,8 @@ pub struct Track {
     pub total_hits: u32,
     pub missed: u32,
     pub confirmed: bool,
+    /// 目标类别号（P9-2；COCO 索引，随检测框更新）。
+    pub class: u32,
     /// 上一帧中心（越线/方向判定用；首帧 None）。
     pub prev_cx: Option<f32>,
     pub prev_cy: Option<f32>,
@@ -130,6 +132,7 @@ impl ByteTracker {
                 tr.h = det.h;
                 tr.missed = 0;
                 tr.total_hits += 1;
+                tr.class = det.class;
                 if !tr.confirmed {
                     tr.hits += 1;
                     if tr.hits >= self.min_hits {
@@ -171,6 +174,7 @@ impl ByteTracker {
                 total_hits: 1,
                 missed: 0,
                 confirmed: false,
+                class: det.class,
                 prev_cx: Some(det.x as f32 + det.w as f32 / 2.0),
                 prev_cy: Some(det.y as f32 + det.h as f32 / 2.0),
             });
@@ -215,7 +219,13 @@ mod tests {
     use super::*;
 
     fn det(x: u32, y: u32) -> Det {
-        Det { x, y, w: 10, h: 10 }
+        Det {
+            x,
+            y,
+            w: 10,
+            h: 10,
+            class: 0,
+        }
     }
 
     /// min_hits=3：单帧误检不确认（防幽灵 ID，抄 ai-nvr ByteTrack 语义）。

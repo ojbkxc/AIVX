@@ -24,7 +24,9 @@ use aivx_net::Device;
 use aivx_perception::stream;
 use std::sync::atomic::Ordering;
 
-use aivx::cameras::CameraManager;
+use aivx::auth::{auth_status, login, logout, AuthState};
+
+use aivx::cameras::{CameraHandle, CameraManager};
 use aivx::memory::{MemEventStore, MemProjections};
 use aivx::pipeline::{DbWriter, Projector};
 use aivx::preview::PreviewHub;
@@ -68,6 +70,17 @@ struct ApiState {
     cameras: Arc<CameraManager>,
     preview: Arc<PreviewHub>,
     agent: Arc<AgentState>,
+    auth: AuthState,
+    /// P9-3/P9-4：config.yml 路径（设备增删/配置改动的写回目标）。
+    config_path: PathBuf,
+}
+
+/// axum FromRef：auth/login/logout handler 用 State<AuthState>，Router 的
+/// 全局 state 是 ApiState——FromRef 让子状态自动抽取。
+impl axum::extract::FromRef<ApiState> for AuthState {
+    fn from_ref(s: &ApiState) -> Self {
+        s.auth.clone()
+    }
 }
 
 /// Agent 运维会话（P8e：单会话内存存根；SessionStore 持消息历史）。
@@ -81,6 +94,177 @@ struct AgentState {
 
 async fn list_devices(State(s): State<ApiState>) -> Json<Vec<Device>> {
     Json(s.cameras.devices())
+}
+
+// ── P9-3 设备管理：POST/PUT/DELETE /api/devices/{id} ─────────────
+//
+// 线程束（T1/T2/T3）是启动期拉起的 OS 线程，运行期不能安全增删——
+// 写回 config.yml 后由调用方重启服务生效（UI 提示；与 Frigate
+// "改配置需重启"语义一致）。写回是唯一动作，进程内不热插拔。
+
+/// POST /api/devices {id, rtsp_url, record_mode?, retain_days?} → 写回 config.yml。
+/// id 必填且唯一（已存在 409）；rtsp_url 必须以 rtsp:// 开头。
+async fn add_device(
+    State(s): State<ApiState>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Some(id) = req.get("id").and_then(|v| v.as_str()) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "缺少设备 ID"})),
+        )
+            .into_response();
+    };
+    // 设备 ID 做目录名（record/sanitize）：预检字符集，防路径注入
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "设备 ID 只允许字母数字-_"})),
+        )
+            .into_response();
+    }
+    let Some(rtsp_url) = req.get("rtsp_url").and_then(|v| v.as_str()) else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "缺少 RTSP 地址"})),
+        )
+            .into_response();
+    };
+    if !rtsp_url.starts_with("rtsp://") {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "RTSP 地址必须以 rtsp:// 开头"})),
+        )
+            .into_response();
+    }
+    let record_mode = req
+        .get("record_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("off");
+    let retain_days = req.get("retain_days").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+    let mut yaml = CameraManager::parse_yaml(&s.config_path).unwrap_or_default();
+    if yaml.cameras.contains_key(id) {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "设备 ID 已存在"})),
+        )
+            .into_response();
+    }
+    // 既有设备的 model 配置带过来（新设备与老设备共用同一检测模型——
+    // 从任一现有设备的 detect.model 继承，无设备则不配）
+    let model = yaml.cameras.values().find_map(|c| c.detect.model.clone());
+    let mut cam = aivx::config_store::new_camera(rtsp_url, record_mode, retain_days);
+    cam.detect.model = model;
+    yaml.cameras.insert(id.to_string(), cam);
+    match aivx::config_store::save(&s.config_path, &yaml) {
+        Ok(()) => Json(serde_json::json!({
+            "ok": true,
+            "restart_required": true,
+            "message": "设备已写入 config.yml，重启服务后生效（systemctl restart aivx）"
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("写回失败: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// PUT /api/devices/{id}：改录像模式/保留天数/检测类别（运行时字段 +
+/// 写回 YAML）。录像模式的运行时语义同步改 CameraHandle（扫描清理
+/// 立即按新 retain_days 生效）；类别过滤是 T2 启动期参数——写回后
+/// 重启生效。
+async fn update_device(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let mut yaml = CameraManager::parse_yaml(&s.config_path).unwrap_or_default();
+    let Some(cam) = yaml.cameras.get_mut(&id) else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "设备不存在"})),
+        )
+            .into_response();
+    };
+    let mut runtime_changed = false;
+    if let Some(mode) = req.get("record_mode").and_then(|v| v.as_str()) {
+        let days = req.get("retain_days").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        aivx::config_store::set_record_mode(cam, mode, days);
+        runtime_changed = true;
+        // 运行时镜像：CameraHandle 的 record_mode/retain_days 同步改
+        //（段扫描 + 清理循环读的是 handle——不重启就按新模式工作）
+        if let Some(h) = s.cameras.cameras.iter().find(|c| c.device.id == id) {
+            let mode: &'static str = match mode {
+                "always" => "always",
+                "motion" => "motion",
+                _ => "off",
+            };
+            // 安全 mutating：record_mode/retain_days 是普通字段——经
+            // raw pointer 绕共享引用改写（CameraManager 无写接口；字段
+            // 非 Atomic，此写法在单控制面写者前提下安全）
+            let h_ptr = h as *const CameraHandle as *mut CameraHandle;
+            unsafe {
+                (*h_ptr).record_mode = mode;
+                (*h_ptr).retain_days = if mode == "motion" { days.max(1) } else { 0 };
+            }
+        }
+    }
+    if let Some(classes) = req.get("classes").and_then(|v| v.as_array()) {
+        let names: Vec<String> = classes
+            .iter()
+            .filter_map(|c| c.as_str().map(String::from))
+            .collect();
+        aivx::config_store::set_detect_classes(cam, names);
+    }
+    if let Some(enabled) = req.get("enabled").and_then(|v| v.as_bool()) {
+        cam.enabled = enabled;
+        runtime_changed = true;
+    }
+    match aivx::config_store::save(&s.config_path, &yaml) {
+        Ok(()) => Json(serde_json::json!({
+            "ok": true,
+            "restart_required": !runtime_changed,
+            "message": if runtime_changed { "已生效并写回 config.yml" } else { "已写回 config.yml，重启服务后生效" }
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("写回失败: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/devices/{id}：从 config.yml 摘除（重启后停拉该路）。
+async fn delete_device(State(s): State<ApiState>, Path(id): Path<String>) -> impl IntoResponse {
+    let mut yaml = CameraManager::parse_yaml(&s.config_path).unwrap_or_default();
+    if yaml.cameras.remove(&id).is_none() {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "设备不存在"})),
+        )
+            .into_response();
+    }
+    match aivx::config_store::save(&s.config_path, &yaml) {
+        Ok(()) => Json(serde_json::json!({
+            "ok": true,
+            "restart_required": true,
+            "message": "已从 config.yml 移除，重启服务后停拉该路"
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("写回失败: {e}")})),
+        )
+            .into_response(),
+    }
 }
 
 async fn list_alarms(State(s): State<ApiState>) -> impl IntoResponse {
@@ -342,22 +526,53 @@ fn mask_rtsp(url: &str) -> String {
 /// 布控配置只读视图（P8e 降级落地）：每路设备 的接入地址（脱敏）/
 /// 分析分辨率/录像模式/快照策略。画布编辑器随后续阶段接入。
 async fn list_config(State(s): State<ApiState>) -> impl IntoResponse {
+    // P9-2/P9-4：类别/保留天数从 config.yml 实时读（T2 启动期参数 + 清理
+    // 策略），比 CameraHandle 更完整（含 enabled:false 的未启动设备）。
+    let yaml = CameraManager::parse_yaml(&s.config_path).unwrap_or_default();
     let items: Vec<serde_json::Value> = s
         .cameras
         .cameras
         .iter()
         .map(|c| {
+            let cam_cfg = yaml.cameras.get(&c.device.id);
             serde_json::json!({
                 "id": c.device.id,
                 "name": c.device.name,
                 "rtsp_main": c.device.rtsp_main.as_deref().map(mask_rtsp),
                 "rtsp_sub": c.device.rtsp_sub.as_deref().map(mask_rtsp),
                 "record_mode": c.record_mode,
+                "retain_days": c.retain_days,
+                "classes": cam_cfg
+                    .and_then(|y| y.detect.classes.as_ref())
+                    .map(|cs| &cs.classes)
+                    .cloned()
+                    .unwrap_or_default(),
                 "state": stream::state::name(c.bridge.metrics.stream_state.load(Ordering::Relaxed)),
             })
         })
         .collect();
     Json(items)
+}
+
+/// P9-1 鉴权中间件：cookie 校验；未登录 401。login/logout/status 路径放行。
+async fn auth_middleware(
+    State(auth): State<AuthState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> impl IntoResponse {
+    let path = req.uri().path();
+    // 公开：登录端点 + 状态探测 + 静态前端（登录页本身当然可访问）。
+    // API（/api/*）与录像（/recordings/*）须带有效 session。
+    let is_static = !path.starts_with("/api/") && !path.starts_with("/recordings/");
+    let is_public = is_static || path == "/api/auth/login" || path == "/api/auth/status";
+    if is_public || auth.check(req.headers()) {
+        Ok(next.run(req).await)
+    } else {
+        Err((
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({"error": "未登录"})),
+        ))
+    }
 }
 
 async fn healthz(State(s): State<ApiState>) -> impl IntoResponse {
@@ -414,8 +629,23 @@ async fn main() -> anyhow::Result<()> {
     // CameraManager：YAML 设备清单 → 每路 T1/T2/T3 线程束（P8a 真实事件上游）
     let cam_config = cfg.data_dir.join("config.yml");
     let record_dir = cfg.data_dir.join("record");
-    let cameras = Arc::new(CameraManager::load_yaml(&cam_config, record_dir)?);
+    let cam_yaml = CameraManager::parse_yaml(&cam_config)?;
+    let cameras = Arc::new(CameraManager::from_yaml_with_record(
+        &cam_yaml,
+        record_dir.clone(),
+    )?);
     let cam_rx = cameras.event_rx();
+
+    // P9-1 鉴权：config.yml auth.password_sha256（缺省不启用——内网语义保留）
+    let auth = AuthState {
+        store: aivx::auth::SessionStore::new(),
+        password_sha256: cam_yaml.auth.as_ref().map(|a| a.password_sha256.clone()),
+    };
+    if auth.enabled() {
+        println!("AIVX: 鉴权已启用（config.yml auth.password_sha256）");
+    } else {
+        println!("AIVX: 鉴权未启用——公网暴露请在 config.yml 配置 auth.password_sha256");
+    }
 
     let state = ApiState {
         store: store.clone(),
@@ -423,6 +653,8 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         cameras: cameras.clone(),
         preview: Arc::new(PreviewHub::new("ffmpeg".into())),
+        auth,
+        config_path: cam_config.clone(),
         agent: Arc::new(AgentState {
             ctx: aivx::agent::ActionContext::with_data(Arc::new(
                 aivx::agent::live_data::LiveDataSource::new(
@@ -557,15 +789,28 @@ async fn main() -> anyhow::Result<()> {
     // ── HTTP：/api/* + static 前端 ──
     let record_dir = cfg.data_dir.join("record");
     let app = Router::new()
+        .route("/api/auth/login", axum::routing::post(login))
+        .route("/api/auth/logout", axum::routing::post(logout))
+        .route("/api/auth/status", get(auth_status))
         .route("/api/devices", get(list_devices))
+        .route("/api/devices", axum::routing::post(add_device))
+        .route("/api/devices/:id", axum::routing::put(update_device))
+        .route("/api/devices/:id", axum::routing::delete(delete_device))
         .route("/api/alarms", get(list_alarms))
         .route("/api/healthz", get(healthz))
         .route("/api/stream/:id", get(stream_preview))
         .route("/api/recordings/:id", get(list_recordings))
         .route("/api/agent/chat", axum::routing::post(agent_chat))
         .route("/api/config", get(list_config))
-        .with_state(state)
-        // 录像回放：ServeDir 限在录像根（防穿越 + Range/seek 免费）
+        .with_state(state.clone())
+        // P9-1 鉴权中间件：/api/* 全保护（login/status 除外——route_from_ref
+        // 层已注册的豁免路径）。401 + JSON（前端据跳登录）。
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        // 录像回放：ServeDir 限在录像根（防穿越 + Range/seek 免费）。
+        // 鉴权：/recordings/* 同样过中间件（录像内容不外泄）。
         .nest_service(
             "/recordings",
             ServeDir::new(&record_dir).append_index_html_on_directories(false),

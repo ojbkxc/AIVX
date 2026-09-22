@@ -16,14 +16,14 @@ use crate::pool::Det;
 /// `*input_size` 放大是 bug）。
 ///
 /// `scale_x/scale_y`：模型 640 空间 → 帧空间缩放（720p 帧则 2.0 / 1.125）。
-/// 返回左上角格式（x1/y1/w/h）——nms 的 iou 按此约定。
+/// 返回左上角格式（x/y/w/h）+ 最高分类别号（P9-2）——nms 的 iou 按此约定。
 pub fn parse_output(
     output: &[f32],
     num_det: usize,
     conf: f32,
     scale_x: f32,
     scale_y: f32,
-) -> Vec<(f32, f32, f32, f32, f32)> {
+) -> Vec<(f32, f32, f32, f32, f32, u32)> {
     if num_det == 0 {
         return Vec::new();
     }
@@ -36,10 +36,12 @@ pub fn parse_output(
         let h = output[3 * num_det + d];
         // 找最高类分数（已 sigmoid——实测灰图 max≈0.0008，有目标≈0.89）
         let mut best_score = 0f32;
+        let mut best_class = 0u32;
         for c in 4..4 + num_classes {
             let s = output[c * num_det + d];
             if s > best_score {
                 best_score = s;
+                best_class = (c - 4) as u32;
             }
         }
         if best_score >= conf {
@@ -49,6 +51,7 @@ pub fn parse_output(
                 w * scale_x,
                 h * scale_y,
                 best_score,
+                best_class,
             ));
         }
     }
@@ -72,7 +75,7 @@ pub fn iou(ax: f32, ay: f32, aw: f32, ah: f32, bx: f32, by: f32, bw: f32, bh: f3
 }
 
 /// NMS（IoU 阈值过滤重叠框）。
-pub fn nms(candidates: &[(f32, f32, f32, f32, f32)], iou_threshold: f32) -> Vec<Det> {
+pub fn nms(candidates: &[(f32, f32, f32, f32, f32, u32)], iou_threshold: f32) -> Vec<Det> {
     let mut sorted = candidates.to_vec();
     sorted.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
     let mut kept: Vec<Det> = Vec::new();
@@ -93,6 +96,7 @@ pub fn nms(candidates: &[(f32, f32, f32, f32, f32)], iou_threshold: f32) -> Vec<
                 y: c.1.max(0.0) as u32,
                 w: c.2 as u32,
                 h: c.3 as u32,
+                class: c.5,
             });
         }
     }
@@ -179,12 +183,33 @@ mod tests {
         out[4 * num_det + 1] = 0.1;
         let cands = parse_output(&out, num_det, 0.4, 1.0, 1.0);
         assert_eq!(cands.len(), 1, "低分 det 应被阈值过滤");
-        let (x1, y1, w, h, score) = cands[0];
+        let (x1, y1, w, h, score, class) = cands[0];
         assert!((x1 - 270.0).abs() < 1.0, "x1 应为 320-100/2=270");
         assert!((y1 - 220.0).abs() < 1.0, "y1 应为 320-200/2=220");
         assert!((w - 100.0).abs() < 1.0);
         assert!((h - 200.0).abs() < 1.0);
         assert!((score - 0.9).abs() < 0.01);
+        assert_eq!(class, 0, "唯一类别的最高分应是 class 0");
+    }
+
+    /// P9-2 类别解析：多类中最高分者胜出（class-major 索引数学）。
+    #[test]
+    fn parse_output_picks_best_class() {
+        let num_det = 1;
+        let num_classes = 3;
+        let mut out = vec![0f32; (4 + num_classes) * num_det];
+        out[0] = 320.0; // cx
+        out[1] = 320.0; // cy（num_det=1 → index 1）
+        out[2] = 100.0; // w
+        out[3] = 200.0; // h
+                        // class 0=0.3（低于阈值）、class 1=0.85、class 2=0.6 → best class 1
+        out[4 * num_det] = 0.3;
+        out[5 * num_det] = 0.85;
+        out[6 * num_det] = 0.6;
+        let cands = parse_output(&out, num_det, 0.4, 1.0, 1.0);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].5, 1, "最高分类别号应为 1");
+        assert!((cands[0].4 - 0.85).abs() < 0.01);
     }
 
     /// 输出解析：scale 缩放（模型 640 → 720p 帧，x 方向 /640*1280）。
@@ -201,7 +226,7 @@ mod tests {
         // 640×360 模型空间 → 1280×720 帧空间：scale 2.0/2.0
         let cands = parse_output(&out, num_det, 0.4, 2.0, 2.0);
         assert_eq!(cands.len(), 1);
-        let (x1, y1, w, h, _) = cands[0];
+        let (x1, y1, w, h, _, _) = cands[0];
         assert!((x1 - 576.0).abs() < 1.0, "x1=(320-32)*2=576");
         assert!((y1 - 328.0).abs() < 1.0, "y1=(180-16)*2=328");
         assert!((w - 128.0).abs() < 1.0);
@@ -213,9 +238,9 @@ mod tests {
     fn nms_removes_overlap() {
         // 高分框 + 高度重叠低分框
         let cands = vec![
-            (100.0, 100.0, 50.0, 50.0, 0.9),
-            (110.0, 110.0, 50.0, 50.0, 0.5),
-            (500.0, 500.0, 50.0, 50.0, 0.7), // 不重叠
+            (100.0, 100.0, 50.0, 50.0, 0.9, 0),
+            (110.0, 110.0, 50.0, 50.0, 0.5, 0),
+            (500.0, 500.0, 50.0, 50.0, 0.7, 1), // 不重叠
         ];
         let dets = nms(&cands, 0.45);
         assert_eq!(dets.len(), 2, "重叠的应只剩一个，不重叠的保留");

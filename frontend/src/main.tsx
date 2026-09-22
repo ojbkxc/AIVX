@@ -10,6 +10,7 @@ import { AlarmsPage } from './pages/Alarms';
 import { RecordingsPage } from './pages/Recordings';
 import { AgentPage } from './pages/Agent';
 import { Sidebar } from './components/Sidebar';
+import { AuthGate } from './components/AuthGate';
 import { RealApiClient } from './api';
 import { initTheme } from './lib/theme';
 import './App.css';
@@ -22,22 +23,26 @@ const api = new RealApiClient();
 
 function App() {
   return (
-    <div className="app-container">
-      <Sidebar />
-      <main className="main-content">
-        <div className="page-fade-enter">
-          <Routes>
-            <Route path="/" element={<LivePage api={api} />} />
-            <Route path="/live" element={<LivePage api={api} />} />
-            <Route path="/devices" element={<DevicesPage api={api} />} />
-            <Route path="/rules" element={<RulesPage api={api} />} />
-            <Route path="/alarms" element={<AlarmsPage api={api} />} />
-            <Route path="/recordings" element={<RecordingsPage api={api} />} />
-            <Route path="/agent" element={<AgentPage />} />
-          </Routes>
+    <AuthGate api={api}>
+      {(authEnabled: boolean, onLogout: () => void) => (
+        <div className="app-container">
+          <Sidebar authEnabled={authEnabled} onLogout={onLogout} />
+          <main className="main-content">
+            <div className="page-fade-enter">
+              <Routes>
+                <Route path="/" element={<LivePage api={api} />} />
+                <Route path="/live" element={<LivePage api={api} />} />
+                <Route path="/devices" element={<DevicesPage api={api} />} />
+                <Route path="/rules" element={<RulesPage api={api} />} />
+                <Route path="/alarms" element={<AlarmsPage api={api} />} />
+                <Route path="/recordings" element={<RecordingsPage api={api} />} />
+                <Route path="/agent" element={<AgentPage />} />
+              </Routes>
+            </div>
+          </main>
         </div>
-      </main>
-    </div>
+      )}
+    </AuthGate>
   );
 }
 

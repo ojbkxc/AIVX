@@ -112,6 +112,7 @@ mod tests {
             total_hits: 3,
             missed: 0,
             confirmed: true,
+            class: 0,
             prev_cx: Some(261.0),
             prev_cy: Some(149.0),
         };

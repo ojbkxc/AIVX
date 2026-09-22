@@ -39,16 +39,32 @@ impl FrameAnalyzer for MotionStubAnalyzer {
             y: 9,
             w: 32,
             h: 18,
+            class: u32::MAX, // 桩：未知类别（映射 label "motion"）
         }]
     }
 }
 
 /// T2 分析循环入口（专用 OS 线程）。
+///
+/// `allowed_classes`（P9-2）：Some(集合) = 只对集合内类别报警（COCO 类别号）；
+/// None = 全部类别。过滤在 tracker 之前——非目标类别的框不进轨迹
+/// （不产生 AlarmRaised，也不干扰现有轨迹匹配）。
 pub fn analysis_loop(
     device_id: DeviceId,
     slot: Arc<LatestFrameSlot>,
     bridge: Arc<PlaneBridge>,
+    analyzer: impl FrameAnalyzer,
+) {
+    analysis_loop_with_classes(device_id, slot, bridge, analyzer, None)
+}
+
+/// 带类别过滤的分析循环（P9-2 摄像头编排调用）。
+pub fn analysis_loop_with_classes(
+    device_id: DeviceId,
+    slot: Arc<LatestFrameSlot>,
+    bridge: Arc<PlaneBridge>,
     mut analyzer: impl FrameAnalyzer,
+    allowed_classes: Option<std::collections::HashSet<u32>>,
 ) {
     let mut motion = EmaMotion::new(slot.width(), slot.height());
     let mut scratch: Vec<u8> = vec![0; slot.frame_size()]; // 预分配（I1）
@@ -112,6 +128,16 @@ pub fn analysis_loop(
             .fetch_add(crate::mono_ns() - infer_start, Ordering::Relaxed);
         bridge.metrics.inferences.fetch_add(1, Ordering::Relaxed);
 
+        // P9-2 类别过滤：配置了类别集时只留目标类别（u32::MAX = 桩/未知，
+        // 恒保留——无类别信息的桩后端不受过滤影响，CI 路径语义不变）。
+        let dets: Vec<Det> = match &allowed_classes {
+            Some(set) if !set.is_empty() => dets
+                .into_iter()
+                .filter(|d| d.class == u32::MAX || set.contains(&d.class))
+                .collect(),
+            _ => dets,
+        };
+
         // 推理命中 → ByteTracker（I8 去重）：新确认轨迹发一次 AlarmRaised；
         // 结束轨迹发 AlarmCleared。运动静止时 tracker 收空帧让轨迹自然失配结束
         // （max_missed=8 帧后 track_lost）。
@@ -127,7 +153,7 @@ pub fn analysis_loop(
                 zone_id: None,
                 track: Some(aivx_events::TrackSnapshot {
                     track_id: tr.id,
-                    label: "motion".into(),
+                    label: coco_label(tr.class).into(),
                     score: tr.hits as f32,
                     box_: [tr.x as f32, tr.y as f32, tr.w as f32, tr.h as f32],
                 }),
@@ -149,6 +175,101 @@ pub fn analysis_loop(
             .analyze_frames
             .fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// COCO 80 类名（P9-2：YOLO 类别号 → 报警标签）。u32::MAX = 桩/未知 → "motion"。
+pub fn coco_label(class: u32) -> &'static str {
+    const NAMES: [&str; 80] = [
+        "person",
+        "bicycle",
+        "car",
+        "motorcycle",
+        "airplane",
+        "bus",
+        "train",
+        "truck",
+        "boat",
+        "traffic light",
+        "fire hydrant",
+        "stop sign",
+        "parking meter",
+        "bench",
+        "bird",
+        "cat",
+        "dog",
+        "horse",
+        "sheep",
+        "cow",
+        "elephant",
+        "bear",
+        "zebra",
+        "giraffe",
+        "backpack",
+        "umbrella",
+        "handbag",
+        "tie",
+        "suitcase",
+        "frisbee",
+        "skis",
+        "snowboard",
+        "sports ball",
+        "kite",
+        "baseball bat",
+        "baseball glove",
+        "skateboard",
+        "surfboard",
+        "tennis racket",
+        "bottle",
+        "wine glass",
+        "cup",
+        "fork",
+        "knife",
+        "spoon",
+        "bowl",
+        "banana",
+        "apple",
+        "sandwich",
+        "orange",
+        "broccoli",
+        "carrot",
+        "hot dog",
+        "pizza",
+        "donut",
+        "cake",
+        "chair",
+        "couch",
+        "potted plant",
+        "bed",
+        "dining table",
+        "toilet",
+        "tv",
+        "laptop",
+        "mouse",
+        "remote",
+        "keyboard",
+        "cell phone",
+        "microwave",
+        "oven",
+        "toaster",
+        "sink",
+        "refrigerator",
+        "book",
+        "clock",
+        "vase",
+        "scissors",
+        "teddy bear",
+        "hair drier",
+        "toothbrush",
+    ];
+    if class == u32::MAX {
+        return "motion";
+    }
+    NAMES.get(class as usize).copied().unwrap_or("unknown")
+}
+
+/// 类别名 → 类别号（配置解析用；未知名忽略）。
+pub fn coco_class_index(name: &str) -> Option<u32> {
+    (0..80u32).find(|&i| coco_label(i) == name)
 }
 
 #[cfg(test)]

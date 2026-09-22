@@ -68,12 +68,15 @@ export interface AlarmsSummary {
   items?: Alarm[];
 }
 
-/** 布控配置只读行（/api/config，P8e 降级：RTSP 脱敏 + 录像模式）。 */
+/** 布控配置行（/api/config，P9-4 起含类别/保留天数）。 */
 export interface SourceConfig {
   id: string;
   name: string;
   rtsp_main: string | null;
   rtsp_sub: string | null;
   record_mode: string;
+  retain_days: number;
+  /** 检测类别（COCO 名；空 = 全部）。 */
+  classes: string[];
   state: string;
 }

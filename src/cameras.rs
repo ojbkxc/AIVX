@@ -37,17 +37,33 @@ use aivx_perception::bridge::PlaneBridge;
 use aivx_perception::frame::LatestFrameSlot;
 use aivx_perception::record::{record_loop, RecordCfg};
 use aivx_perception::stream::DecodeCfg;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// ── YAML 模型（Frigate 字段习惯）──────────────────────────────
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AivxYaml {
     #[serde(default)]
     pub cameras: HashMap<String, CameraYaml>,
+    /// P9-1 登录鉴权：`auth.password_sha256`（十六进制）。缺省不启用。
+    #[serde(default)]
+    pub auth: Option<AuthYaml>,
 }
 
-#[derive(Debug, Deserialize)]
+/// P9-2 检测类别：全局 `detect.classes`（COCO 类别名列表；空/缺省 = 全部）。
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct DetectClassesYaml {
+    #[serde(default)]
+    pub classes: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthYaml {
+    /// SHA-256(password) 十六进制。生成：`echo -n '口令' | sha256sum`。
+    pub password_sha256: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CameraYaml {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -63,19 +79,19 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FfmpegYaml {
     pub inputs: Vec<InputYaml>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct InputYaml {
     pub path: String,
     #[serde(default)]
     pub roles: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DetectYaml {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -87,6 +103,10 @@ pub struct DetectYaml {
     /// （OrtYoloBackend 真实推理）；缺省回退 MotionStubAnalyzer。
     #[serde(default)]
     pub model: Option<String>,
+    /// P9-2 类别过滤：只对这些 COCO 类别名报警（person/cat/dog…）。
+    /// 空/缺省 = 全部类别。
+    #[serde(default)]
+    pub classes: Option<DetectClassesYaml>,
 }
 
 fn default_w() -> usize {
@@ -96,7 +116,7 @@ fn default_h() -> usize {
     720
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordYaml {
     pub enabled: bool,
@@ -104,12 +124,12 @@ pub struct RecordYaml {
     pub motion: Option<RecordMotionYaml>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct RecordMotionYaml {
     pub days: u32,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SnapshotsYaml {
     #[serde(default)]
     pub enabled: bool,
@@ -231,14 +251,19 @@ pub struct CameraManager {
 }
 
 impl CameraManager {
+    /// 纯解析（不动设备）：main 读 auth/classes 等全局段复用。
+    pub fn parse_yaml(path: &Path) -> anyhow::Result<AivxYaml> {
+        if path.exists() {
+            let raw = std::fs::read_to_string(path)?;
+            Ok(serde_yaml::from_str(&raw)?)
+        } else {
+            Ok(AivxYaml::default())
+        }
+    }
+
     /// 解析 YAML（不存在 → 空管理器，服务仍常驻——P9b 语义保留）。
     pub fn load_yaml(path: &Path, record_dir: PathBuf) -> anyhow::Result<Self> {
-        let yaml: AivxYaml = if path.exists() {
-            let raw = std::fs::read_to_string(path)?;
-            serde_yaml::from_str(&raw)?
-        } else {
-            AivxYaml::default()
-        };
+        let yaml = Self::parse_yaml(path)?;
         Self::from_yaml_with_record(&yaml, record_dir)
     }
 
@@ -326,6 +351,25 @@ impl CameraManager {
                 #[cfg_attr(not(feature = "aivx-ort-yolo"), allow(unused_variables))]
                 let model_path = cam.detect.model.clone();
                 let t2_name = format!("cam-{name}-t2-analyze");
+                // P9-2 类别过滤：detect.classes 类别名 → COCO 类别号集合；
+                // 空/缺省 = None（全部类别——向后兼容既有部署）。
+                let allowed_classes: Option<std::collections::HashSet<u32>> = {
+                    let names = cam.detect.classes.as_ref().map(|c| &c.classes);
+                    match names {
+                        Some(list) if !list.is_empty() => {
+                            let set: std::collections::HashSet<u32> = list
+                                .iter()
+                                .filter_map(|n| aivx_perception::analyze::coco_class_index(n))
+                                .collect();
+                            if set.is_empty() {
+                                None // 全部类名无效：退回全部（宁多报不瞎报）
+                            } else {
+                                Some(set)
+                            }
+                        }
+                        _ => None,
+                    }
+                };
                 // 共享池：同模型路径一份（多路同模型跨路攒批，Session 不翻倍）
                 #[cfg(feature = "aivx-ort-yolo")]
                 let pool_ref = model_path
@@ -342,18 +386,19 @@ impl CameraManager {
                 let analyzer_pool = pool_ref;
                 match make_analyzer(analyzer_pool, cam.detect.width, cam.detect.height) {
                     Some(analyzer) => {
-                        let run = aivx_perception::analyze::analysis_loop;
-                        std::thread::Builder::new()
-                            .name(t2_name)
-                            .spawn(move || run(device_id, slot, bridge, analyzer))?;
+                        let run = aivx_perception::analyze::analysis_loop_with_classes;
+                        std::thread::Builder::new().name(t2_name).spawn(move || {
+                            run(device_id, slot, bridge, analyzer, allowed_classes)
+                        })?;
                     }
                     None => {
                         std::thread::Builder::new().name(t2_name).spawn(move || {
-                            aivx_perception::analyze::analysis_loop(
+                            aivx_perception::analyze::analysis_loop_with_classes(
                                 device_id,
                                 slot,
                                 bridge,
                                 MotionStubAnalyzer,
+                                allowed_classes,
                             )
                         })?;
                     }

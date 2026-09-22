@@ -680,3 +680,109 @@
     width: 100%;
   }
 }
+
+/* ── P9-1 登录页 ── */
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-card h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.login-brand {
+  margin-bottom: 4px;
+}
+
+.login-brand .sidebar-logo {
+  width: 34px;
+  height: 34px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #fff;
+}
+
+.login-card .btn {
+  width: 100%;
+}
+
+.login-card .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── P9-3 添加设备表单 ── */
+.add-device-form {
+  margin-bottom: 20px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.add-device-form h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.form-row .form-group {
+  flex: 1 1 140px;
+  min-width: 130px;
+}
+
+.device-item {
+  position: relative;
+}
+
+.device-item .btn-danger {
+  margin-top: 8px;
+}
+
+/* ── P9-4 布控配置编辑行 ── */
+.config-edit-row {
+  margin-top: 10px;
+}
+
+.class-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.chip {
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  opacity: 0.55;
+}
+
+.chip-on {
+  opacity: 1;
+  background: rgba(47, 111, 237, 0.12);
+  border-color: var(--accent-color, #2f6fed);
+}

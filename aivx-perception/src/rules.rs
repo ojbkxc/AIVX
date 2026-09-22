@@ -211,6 +211,7 @@ mod tests {
             total_hits: 3,
             missed: 0,
             confirmed: true,
+            class: 0,
             prev_cx: Some(x as f32 + 5.0),
             prev_cy: Some(y as f32 + 5.0),
         }
