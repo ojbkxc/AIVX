@@ -19,7 +19,7 @@ anyhow = "1.0"
 
 [package]
 name = "aivx"
-version = "0.1.0"
+version = "1.0.0"
 description = "AIVX — AI Video eXtended: high-performance self-hosted AI NVR with three-layer AI, zero-copy frame path and event sourcing"
 edition = "2021"
 license-file = "LICENSE"

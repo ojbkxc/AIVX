@@ -182,7 +182,7 @@ export class MockApiClient implements ApiClient {
       this.healthzData ?? {
         status: 'ok',
         max_seq: 1,
-        version: '0.1.0-mock',
+        version: '1.0.0-mock',
         streams: this.devices.map((d, i) => ({
           id: d.id,
           state: 'ok' as const,

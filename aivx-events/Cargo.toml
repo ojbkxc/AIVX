@@ -3,7 +3,7 @@
 # CI 断言：cargo tree -p aivx-events 不得出现 tokio。
 [package]
 name = "aivx-events"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license-file = "../LICENSE"
 

@@ -4,7 +4,7 @@
 # CI 断言：cargo tree -i tokio -p aivx-perception 必须为空。
 [package]
 name = "aivx-perception"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license-file = "../LICENSE"
 
