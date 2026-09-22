@@ -48,7 +48,9 @@ subprocess.run(["curl", "-sL", "-o", zip_path, loc], check=True)
 print("zip:", zip_path, os.path.getsize(zip_path), "bytes")
 
 # 解包
-dst = os.path.join(TEMP, "aivx-bundle7")
+# 目录与 deploy_bundle.py 对齐：fetch 写 bundle8 = deploy 读 bundle8，
+# 省去手动 cp（曾因 bundle7/bundle8 不一致部署了旧 bundle8 的事故）。
+dst = os.path.join(TEMP, "aivx-bundle8")
 subprocess.run(["rm", "-rf", dst], check=True)
 os.makedirs(dst, exist_ok=True)
 subprocess.run(["unzip", "-o", zip_path, "-d", dst], check=True)
