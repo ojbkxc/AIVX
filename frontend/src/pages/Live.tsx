@@ -6,6 +6,7 @@ import type { ApiClient } from '../api';
 import type { Device, StreamStatus } from '../types';
 import { attachFmp4Stream, buildStreamUrl } from '../lib/fmp4-player';
 import type { Fmp4PlayerState } from '../lib/fmp4-player';
+import { PtzPanel } from '../components/PtzPanel';
 
 const STATE_LABEL: Record<StreamStatus['state'], string> = {
   ok: '正常',
@@ -15,7 +16,7 @@ const STATE_LABEL: Record<StreamStatus['state'], string> = {
   stopped: '已停止',
 };
 
-function StreamCard({ device, status }: { device: Device; status?: StreamStatus }) {
+function StreamCard({ device, status, api }: { device: Device; status?: StreamStatus; api: ApiClient }) {
   const state = status?.state ?? 'connecting';
   const fps = status ? Math.round(status.decode_frames / 30) : 0; // 30s 采样窗粗估
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -59,6 +60,7 @@ function StreamCard({ device, status }: { device: Device; status?: StreamStatus 
           <span className="rec-badge">REC {device.record_mode}</span>
         )}
       </div>
+      {device.capabilities.ptz && <PtzPanel api={api} deviceId={device.id} />}
     </div>
   );
 }
@@ -106,7 +108,7 @@ export function LivePage({ api }: { api: ApiClient }) {
       </div>
       <div className="stream-grid">
         {devices.map((d) => (
-          <StreamCard key={d.id} device={d} status={streams[d.id]} />
+          <StreamCard key={d.id} device={d} status={streams[d.id]} api={api} />
         ))}
       </div>
     </div>

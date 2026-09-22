@@ -73,6 +73,8 @@ struct ApiState {
     auth: AuthState,
     /// P9-3/P9-4：config.yml 路径（设备增删/配置改动的写回目标）。
     config_path: PathBuf,
+    /// P9-5：PTZ 可控设备注册表（从 config.yml RTSP URL 提取）。
+    ptz: Arc<aivx::ptz::PtzRegistry>,
 }
 
 /// axum FromRef：auth/login/logout handler 用 State<AuthState>，Router 的
@@ -553,6 +555,161 @@ async fn list_config(State(s): State<ApiState>) -> impl IntoResponse {
     Json(items)
 }
 
+// ── P9-5 PTZ 操控（TP-LINK NVR 私有协议）─────────────────────────
+
+/// GET /api/ptz/{id}/status：云台当前位置 + 运动状态。
+async fn ptz_status(State(s): State<ApiState>, Path(id): Path<String>) -> impl IntoResponse {
+    let Some(t) = s.ptz.get(&id) else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "该设备不支持 PTZ"})),
+        )
+            .into_response();
+    };
+    // IPC 调用是 blocking HTTP（reqwest blocking）——挪阻塞线程池，
+    // 不卡 tokio worker（同段扫描的 spawn_blocking 先例）。
+    let ipc = t.ipc.clone();
+    let device_id = t.device_id.clone();
+    match tokio::task::spawn_blocking(move || ipc.ptz_status()).await {
+        Ok(Ok(st)) => Json(aivx::ptz::PtzStatusResp::from_ipc(&device_id, &st)).into_response(),
+        Ok(Err(e)) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("NVR 通信失败: {e}")})),
+        )
+            .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/ptz/{id}/move：绝对定位或相对增量（度）。
+async fn ptz_move(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<aivx::ptz::PtzMoveReq>,
+) -> impl IntoResponse {
+    let Some(t) = s.ptz.get(&id) else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "该设备不支持 PTZ"})),
+        )
+            .into_response();
+    };
+    let ipc = t.ipc.clone();
+    let channel = t.channel;
+    let r = tokio::task::spawn_blocking(move || -> Result<aivx::ptz::PtzStatusResp, String> {
+        // 相对增量：先读当前位置再叠加
+        let (pan, tilt) = match (req.pan, req.tilt, req.d_pan, req.d_tilt) {
+            (Some(p), Some(ti), _, _) => (p, ti),
+            (_, _, dp, dt) => {
+                let cur = ipc.ptz_status()?;
+                (
+                    cur.position_pan.parse::<f64>().unwrap_or(0.0) + dp.unwrap_or(0.0),
+                    cur.position_tilt.parse::<f64>().unwrap_or(0.0) + dt.unwrap_or(0.0),
+                )
+            }
+        };
+        // 范围夹取（实测此机 pan ≈ ±1.x° / tilt ≈ [-1, 0.5]；超范围 NVR 拒
+        // 绝 -64314）。夹 ±30° 泛化窗（不同机型物理范围不同，给足余量，
+        // 越界由 NVR 端 -64314 兜底报错）。
+        let pan = pan.clamp(-30.0, 30.0);
+        let tilt = tilt.clamp(-30.0, 30.0);
+        ipc.ptz_absolute_move_ch(pan, tilt, channel)
+            .map_err(|e| format!("移动失败: {e}"))?;
+        let st = ipc.ptz_status()?;
+        Ok(aivx::ptz::PtzStatusResp::from_ipc(&id, &st))
+    })
+    .await;
+    match r {
+        Ok(Ok(resp)) => Json(resp).into_response(),
+        Ok(Err(e)) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/ptz/{id}/preset：set（新建）/ goto（跳转）。
+///
+/// remove 不暴露：NVR 固件 remove_preset 恒 -1 不生效（实证），槽满 -64306
+/// 时前端提示用户到 TP-LINK 官方 App 清理。
+async fn ptz_preset(
+    State(s): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<aivx::ptz::PtzPresetReq>,
+) -> impl IntoResponse {
+    let Some(t) = s.ptz.get(&id) else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "该设备不支持 PTZ"})),
+        )
+            .into_response();
+    };
+    let ipc = t.ipc.clone();
+    let channel = t.channel;
+    let r = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        match req.action.as_str() {
+            "set" => {
+                let name = req.name.as_deref().unwrap_or("");
+                if name.is_empty() {
+                    return Err("预置位名字不能为空".into());
+                }
+                let nid = ipc
+                    .save_preset_ch(name, channel)
+                    .map_err(|e| interpret_ipc_error(&e))?;
+                Ok(serde_json::json!({"ok": true, "id": nid}))
+            }
+            "goto" => {
+                let Some(pid) = req.id else {
+                    return Err("缺少预置位 id".into());
+                };
+                ipc.goto_preset_ch(pid, channel)
+                    .map_err(|e| interpret_ipc_error(&e))?;
+                Ok(serde_json::json!({"ok": true}))
+            }
+            other => Err(format!("未知动作 {other}（支持 set/goto）")),
+        }
+    })
+    .await;
+    match r {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// NVR 错误码 → 用户可读语义（实证错误码表）。
+fn interpret_ipc_error(e: &str) -> String {
+    if e.contains("-64306") {
+        "预置位已满（NVR 上限 8 个）。请到 TP-LINK 官方 App 删除不再需要的预置位后重试。".into()
+    } else if e.contains("-64314") {
+        "目标位置超出云台物理范围。".into()
+    } else if e.contains("-40401") {
+        "NVR 会话过期（已自动重试仍失败），请稍后再试。".into()
+    } else if e.contains("-64302") {
+        "参数格式错误。".into()
+    } else {
+        e.to_string()
+    }
+}
+
 /// P9-1 鉴权中间件：cookie 校验；未登录 401。login/logout/status 路径放行。
 async fn auth_middleware(
     State(auth): State<AuthState>,
@@ -654,6 +811,8 @@ async fn main() -> anyhow::Result<()> {
         preview: Arc::new(PreviewHub::new("ffmpeg".into())),
         auth,
         config_path: cam_config.clone(),
+        // P9-5：RTSP URL → NVR host/凭据/通道（TP-LINK 形态才注册）
+        ptz: Arc::new(aivx::ptz::PtzRegistry::from_yaml_cameras(&cam_yaml)),
         agent: Arc::new(AgentState {
             ctx: aivx::agent::ActionContext::with_data(Arc::new(
                 aivx::agent::live_data::LiveDataSource::new(
@@ -801,6 +960,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/recordings/:id", get(list_recordings))
         .route("/api/agent/chat", axum::routing::post(agent_chat))
         .route("/api/config", get(list_config))
+        // P9-5 PTZ 操控（TP-LINK NVR 私有协议；不支持 PTZ 的设备 404）
+        .route("/api/ptz/:id/status", get(ptz_status))
+        .route("/api/ptz/:id/move", axum::routing::post(ptz_move))
+        .route("/api/ptz/:id/preset", axum::routing::post(ptz_preset))
         .with_state(state.clone())
         // P9-1 鉴权中间件：/api/* 全保护（login/status 除外——route_from_ref
         // 层已注册的豁免路径）。401 + JSON（前端据跳登录）。

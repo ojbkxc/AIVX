@@ -1,7 +1,7 @@
-// 实时预览页测试：流状态渲染 + 分辨率占位。
+// 实时预览页测试：流状态渲染 + 分辨率占位 + PTZ 面板（P9-5）。
 
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { LivePage } from './Live';
 import { MockApiClient } from '../api';
 import type { Device } from '../types';
@@ -23,5 +23,28 @@ describe('LivePage', () => {
   it('录像模式标记', async () => {
     render(<LivePage api={new MockApiClient(cams)} />);
     expect(await screen.findByText(/REC always/)).toBeTruthy();
+  });
+
+  it('PTZ：capabilities.ptz 设备渲染面板，点击→ 走 ptzMove', async () => {
+    const api = new MockApiClient(cams);
+    const ptzMove = vi.fn(api.ptzMove.bind(api));
+    api.ptzMove = ptzMove;
+    render(<LivePage api={api} />);
+    // ptz 能力设备有面板；无能力设备没有
+    expect(await screen.findByTestId('ptz-tp_1-2')).toBeTruthy();
+    expect(screen.queryByTestId('ptz-tp_1-1')).toBeNull();
+    fireEvent.click(screen.getByTestId('ptz-right'));
+    await waitFor(() => expect(ptzMove).toHaveBeenCalledWith('tp_1-2', { d_pan: 0.3, d_tilt: 0 }));
+  });
+
+  it('PTZ：保存预置位走 ptzPreset(set) 并显示 id', async () => {
+    const api = new MockApiClient(cams);
+    const ptzPreset = vi.fn(api.ptzPreset.bind(api));
+    api.ptzPreset = ptzPreset;
+    render(<LivePage api={api} />);
+    fireEvent.change(await screen.findByTestId('ptz-preset-name'), { target: { value: '门口' } });
+    fireEvent.click(screen.getByTestId('ptz-save'));
+    await waitFor(() => expect(ptzPreset).toHaveBeenCalledWith('tp_1-2', { type: 'set', name: '门口' }));
+    expect(await screen.findByText(/预置位已保存（id=9）/)).toBeTruthy();
   });
 });

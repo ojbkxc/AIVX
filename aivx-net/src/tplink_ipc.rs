@@ -164,9 +164,39 @@ impl IpcSession {
         .map(|_| ())
     }
 
+    /// PTZ 绝对移动（NVR 通道版：channel_id 指明 NVR 下的通道号）。
+    pub fn ptz_absolute_move_ch(&self, pan: f64, tilt: f64, channel: u32) -> Result<(), String> {
+        self.action(
+            "ptz",
+            "absolute_move",
+            json!({
+                "position_pan": pan.to_string(),
+                "position_tilt": tilt.to_string(),
+                "channel_id": channel,
+            }),
+        )
+        .map(|_| ())
+    }
+
     /// 保存预置位（返回分配的 id）。
     pub fn save_preset(&self, name: &str) -> Result<u32, String> {
         let v = self.action("preset", "set_preset", json!({"name": name}))?;
+        v.get("id")
+            .and_then(|x| {
+                x.as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| x.as_u64().map(|n| n as u32))
+            })
+            .ok_or_else(|| format!("set_preset no id: {}", v))
+    }
+
+    /// 保存预置位（NVR 通道版：channel_id 绑定通道）。
+    pub fn save_preset_ch(&self, name: &str, channel: u32) -> Result<u32, String> {
+        let v = self.action(
+            "preset",
+            "set_preset",
+            json!({"name": name, "channel_id": channel}),
+        )?;
         v.get("id")
             .and_then(|x| {
                 x.as_str()
@@ -180,6 +210,16 @@ impl IpcSession {
     pub fn goto_preset(&self, id: u32) -> Result<(), String> {
         self.action("preset", "goto_preset", json!({"id": id.to_string()}))
             .map(|_| ())
+    }
+
+    /// 转到预置位（NVR 通道版：id 字符串 + channel_id——实测 int id 报 -64302）。
+    pub fn goto_preset_ch(&self, id: u32, channel: u32) -> Result<(), String> {
+        self.action(
+            "preset",
+            "goto_preset",
+            json!({"id": id.to_string(), "channel_id": channel}),
+        )
+        .map(|_| ())
     }
 
     /// 码流信息（分辨率/编码/帧率/码率）。
@@ -302,12 +342,24 @@ impl IpcDevice {
         self.with_session(|s| s.ptz_absolute_move(pan, tilt))
     }
 
+    pub fn ptz_absolute_move_ch(&self, pan: f64, tilt: f64, channel: u32) -> Result<(), String> {
+        self.with_session(|s| s.ptz_absolute_move_ch(pan, tilt, channel))
+    }
+
     pub fn save_preset(&self, name: &str) -> Result<u32, String> {
         self.with_session(|s| s.save_preset(name))
     }
 
+    pub fn save_preset_ch(&self, name: &str, channel: u32) -> Result<u32, String> {
+        self.with_session(|s| s.save_preset_ch(name, channel))
+    }
+
     pub fn goto_preset(&self, id: u32) -> Result<(), String> {
         self.with_session(|s| s.goto_preset(id))
+    }
+
+    pub fn goto_preset_ch(&self, id: u32, channel: u32) -> Result<(), String> {
+        self.with_session(|s| s.goto_preset_ch(id, channel))
     }
 
     pub fn video_stream(&self) -> Result<Value, String> {

@@ -16,6 +16,32 @@ export interface ApiClient {
   addDevice(req: AddDeviceReq): Promise<DeviceMutationResult>;
   updateDevice(id: string, req: UpdateDeviceReq): Promise<DeviceMutationResult>;
   deleteDevice(id: string): Promise<DeviceMutationResult>;
+  ptzStatus(deviceId: string): Promise<PtzStatus>;
+  ptzMove(deviceId: string, req: PtzMoveReq): Promise<PtzStatus>;
+  ptzPreset(deviceId: string, req: PtzPresetReq): Promise<{ ok: boolean; id?: number }>;
+}
+
+/** GET /api/ptz/{id}/status 响应（P9-5）。 */
+export interface PtzStatus {
+  device_id: string;
+  position_pan: number;
+  position_tilt: number;
+  moving: boolean;
+}
+
+/** POST /api/ptz/{id}/move 请求：绝对 pan/tilt 或相对增量 d_pan/d_tilt。 */
+export interface PtzMoveReq {
+  pan?: number;
+  tilt?: number;
+  d_pan?: number;
+  d_tilt?: number;
+}
+
+/** POST /api/ptz/{id}/preset 请求（set 新建 / goto 跳转）。 */
+export interface PtzPresetReq {
+  type: 'set' | 'goto';
+  name?: string;
+  id?: number;
 }
 
 /** POST /api/devices 请求体（P9-3）。 */
@@ -123,6 +149,18 @@ export class RealApiClient implements ApiClient {
   async deleteDevice(id: string): Promise<DeviceMutationResult> {
     return this.post<DeviceMutationResult>(`/devices/${encodeURIComponent(id)}`, undefined, 'DELETE');
   }
+
+  async ptzStatus(deviceId: string): Promise<PtzStatus> {
+    return this.get<PtzStatus>(`/ptz/${encodeURIComponent(deviceId)}/status`);
+  }
+
+  async ptzMove(deviceId: string, req: PtzMoveReq): Promise<PtzStatus> {
+    return this.post<PtzStatus>(`/ptz/${encodeURIComponent(deviceId)}/move`, req);
+  }
+
+  async ptzPreset(deviceId: string, req: PtzPresetReq): Promise<{ ok: boolean; id?: number }> {
+    return this.post<{ ok: boolean; id?: number }>(`/ptz/${encodeURIComponent(deviceId)}/preset`, req);
+  }
 }
 
 /** 内存 mock（测试用）。 */
@@ -189,5 +227,22 @@ export class MockApiClient implements ApiClient {
 
   async deleteDevice(_id: string): Promise<DeviceMutationResult> {
     return { ok: true, restart_required: true, message: 'mock' };
+  }
+
+  async ptzStatus(deviceId: string): Promise<PtzStatus> {
+    return { device_id: deviceId, position_pan: 0, position_tilt: 0, moving: false };
+  }
+
+  async ptzMove(deviceId: string, req: PtzMoveReq): Promise<PtzStatus> {
+    return {
+      device_id: deviceId,
+      position_pan: (req.pan ?? 0) + (req.d_pan ?? 0),
+      position_tilt: (req.tilt ?? 0) + (req.d_tilt ?? 0),
+      moving: true,
+    };
+  }
+
+  async ptzPreset(_deviceId: string, req: PtzPresetReq): Promise<{ ok: boolean; id?: number }> {
+    return { ok: true, id: req.type === 'set' ? 9 : undefined };
   }
 }

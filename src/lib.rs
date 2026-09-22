@@ -17,3 +17,4 @@ pub mod fmp4;
 pub mod memory;
 pub mod pipeline;
 pub mod preview;
+pub mod ptz;

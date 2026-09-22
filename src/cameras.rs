@@ -157,6 +157,12 @@ fn sub_stream_url(main: &str) -> String {
     main.replacen("stream1", "stream2", 1)
 }
 
+/// TP-LINK NVR 的 RTSP 语法判定（含 `&channel=`）——capabilities.ptz 依据。
+/// PtzRegistry 与此同判（URL 形态注册）。
+fn is_tp_nvr_url(url: &str) -> bool {
+    url.contains("&channel=")
+}
+
 /// 构造 T2 推理分析器（P8b YOLO 接线）。
 ///
 /// - 共享池已建（`detect.model` 指定 ONNX 且加载成功）：PoolAnalyzer
@@ -441,6 +447,9 @@ impl CameraManager {
                     manufacturer: None,
                     model: None,
                     capabilities: Capabilities {
+                        // P9-5：TP-LINK NVR 形态（&channel=）即 PTZ 可控
+                        // （PtzRegistry 按 URL 注册；非 TP 形态不开面板）。
+                        ptz: is_tp_nvr_url(&input.path),
                         main_sub_streams: true,
                         ..Default::default()
                     },
