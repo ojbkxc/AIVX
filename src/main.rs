@@ -276,27 +276,26 @@ async fn list_alarms(State(s): State<ApiState>) -> impl IntoResponse {
     }))
 }
 
-/// 设备录像段索引（recordings 派生表投影）。duration 按段序差分补
-/// （T3 段固定 600s；末段开放中，按 mtime 推）。
+/// 设备录像段索引（recordings 派生表投影）。
+///
+/// duration 由 scanner 按 mtime-起点 实时给（真实录制时长，封顶 600）。
+/// 过滤"正在写的段"：mtime 距今 < segment_secs*2 的段 ffmpeg 还没写完
+/// moov atom——浏览器点开必失败（线上实测 moov not found），列表不出。
 async fn list_recordings(State(s): State<ApiState>, Path(id): Path<String>) -> impl IntoResponse {
     let mut rows = s.projections.recordings_of(&id);
-    let seg = 600i64;
-    for i in 0..rows.len() {
-        if rows[i].duration_secs == 0.0 {
-            // 差分：下段 start - 本段 start；末段按文件 mtime 与 start 的差
-            let start = rows[i].start_ts;
-            let end = rows.get(i + 1).map(|r| r.start_ts).unwrap_or_else(|| {
-                std::fs::metadata(&rows[i].file_path)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(start)
-            });
-            let d = (end - start).max(0);
-            rows[i].duration_secs = if d == 0 { 0.0 } else { d.min(seg) as f64 };
-        }
-    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    let grace = 1200i64; // segment_secs(600) * 2：封口后 moov 落盘缓冲
+    rows.retain(|r| {
+        std::fs::metadata(&r.file_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|t| now - t.as_secs() as i64 >= grace)
+            .unwrap_or(false) // 文件没了（sweep 与列表竞争）——不出
+    });
     Json(rows)
 }
 

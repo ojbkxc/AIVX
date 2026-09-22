@@ -148,7 +148,7 @@ impl MemProjections {
             .collect()
     }
 
-    /// 设备录像段（start_ts 升序）。duration 由 API 层差分补（段固定 600s）。
+    /// 设备录像段（start_ts 升序）。duration 由 scanner 给真实录制时长。
     pub fn recordings_of(&self, device_id: &str) -> Vec<RecordingRow> {
         let rows = self.recordings.lock().unwrap();
         let mut out: Vec<RecordingRow> = rows

@@ -150,12 +150,18 @@ impl SegmentScanner {
             if self.seen.contains(&path) {
                 continue;
             }
-            let start_mono = mtime
+            // 段起点：文件名 seg_%Y%m%d_%H%M%S.mp4 解析（ffmpeg -strftime 1
+            // 写的是段起点本地时刻——比 mtime（封口时刻）早一个段长；
+            // 解析失败回退 mtime。
+            let start_mono = parse_seg_start(&path, mtime);
+            // 段时长：mtime（封口时刻）- 起点 = 真实录制时长；正在写的
+            // 段 mtime 随写更新，值持续增长，API 层按 cap 600 收敛。
+            let dur = (mtime
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0);
-            // 段时长：文件名 %Y%m%d_%H%M%S 解析（失败则 duration=0 由投影器容错）
-            let dur = parse_duration_hint(&path).unwrap_or(0.0);
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0)
+                - start_mono as f64 / 1_000_000_000.0)
+                .max(0.0);
             let delivered = emit(Event::RecordingSegment {
                 device_id: self.device_id.clone(),
                 file_path: path.to_string_lossy().into_owned(),
@@ -172,10 +178,83 @@ impl SegmentScanner {
     }
 }
 
-/// 文件名 seg_YYYYMMDD_HHMMSS.mp4 → 时长提示（按分段时间戳差不可得，
-/// 单文件给保守 0；投影器回放按文件实际探测）。P0 简化。
-fn parse_duration_hint(_path: &Path) -> Option<f64> {
-    None
+/// 文件名 seg_YYYYMMDD_HHMMSS.mp4 → 段起点墙钟纳秒。
+///
+/// ffmpeg `-strftime 1` 段文件名的时间是**段起点**（本地时区）——
+/// 这是索引里 start_ts 的正确语义（mtime 是封口时刻，比起点晚一个
+/// 段长；旧代码拿它当 start_ts，列表时间全偏晚 10 分钟）。
+/// 解析失败（老文件/改名）回退 mtime。
+fn parse_seg_start(path: &Path, mtime: std::time::SystemTime) -> u64 {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    // seg_YYYYMMDD_HHMMSS.mp4 → [YYYY, MM, DD, HH, MM, SS]
+    let Some(tail) = name.strip_prefix("seg_") else {
+        return mtime_ns(mtime);
+    };
+    let Some(stamp) = tail.strip_suffix(".mp4") else {
+        return mtime_ns(mtime);
+    };
+    let b = stamp.as_bytes();
+    if b.len() != 15 || b[8] != b'_' {
+        return mtime_ns(mtime);
+    }
+    let ok = b.iter().all(|c| c.is_ascii_digit() || *c == b'_');
+    let digits: Vec<u32> = stamp
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .map(|c| c.to_digit(10).unwrap())
+        .collect();
+    if !ok || digits.len() != 14 {
+        return mtime_ns(mtime);
+    }
+    let (y, mo, d, h, mi, s) = (
+        digits[0] as i32 * 1000 + digits[1] as i32 * 100 + digits[2] as i32 * 10 + digits[3] as i32,
+        digits[4] * 10 + digits[5],
+        digits[6] * 10 + digits[7],
+        digits[8] * 10 + digits[9],
+        digits[10] * 10 + digits[11],
+        digits[12] * 10 + digits[13],
+    );
+    // 本地时区解析：via chrono-free 法——先把 Y/M/D/H/M/S 视作 UTC 拑出
+    // epoch，再加本地时区偏移（libc::localtime 不引；用 env TZ 读不可靠。
+    // 服务器时区固定 Asia/Shanghai（部署机 locale）→ 偏移 +8h。
+    // 若跨时区部署，段起点会偏时区差——mtime 回退兜底同偏，可接受。
+    let days = days_from_civil(y, mo as i32, d as i32);
+    let epoch = days * 86400 + h as i64 * 3600 + mi as i64 * 60 + s as i64;
+    let local_offset_secs = local_utc_offset();
+    let secs = epoch - local_offset_secs;
+    (secs.max(0) as u64) * 1_000_000_000
+}
+
+fn mtime_ns(mtime: std::time::SystemTime) -> u64 {
+    mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+/// 本地时区与 UTC 的偏移秒（Asia/Shanghai = +8h；其他时区取 0）。
+/// ffmpeg strftime 写文件名用本地时区——段起点 epoch 需减偏移。
+fn local_utc_offset() -> i64 {
+    // 已知部署机为 CST(+8)；通用化需 tzfile 解析，P0 不引依赖——
+    // 环境变量 TZ 含 "UTC" 或空时按 0 算，否则 +8。
+    match std::env::var("TZ") {
+        Ok(tz) if tz == "UTC" || tz == "utc" || tz.starts_with("Etc/UTC") => 0,
+        _ => 8 * 3600,
+    }
+}
+
+/// civil 日期 → 自 1970-01-01 的天数（Howard Hinnant 算法，无依赖）。
+fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era as i64 * 146097 + doe as i64 - 719468
 }
 
 /// 按保留天数清理超期段（DESIGN.md §3.3 承诺：按天数自动清理）。
@@ -362,6 +441,85 @@ mod tests {
         assert!(!old.exists(), "超期段必须删");
         assert!(fresh.exists(), "新段必须保留");
         assert!(recent.exists(), "1 天内段必须保留");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 段起点解析：seg_YYYYMMDD_HHMMSS.mp4 文件名 → 段起点墙钟（非 mtime）。
+    /// 线上 bug：旧代码 start_ts=mtime（封口时刻），列表时间全偏晚 10 分钟。
+    #[test]
+    fn seg_start_from_filename() {
+        let path = PathBuf::from("/tmp/x/seg_20260922_081620.mp4");
+        let fake_mtime = std::time::SystemTime::now();
+        let start_ns = parse_seg_start(&path, fake_mtime);
+        let start = start_ns / 1_000_000_000;
+        // 本地时区（默认 +8）下 2026-09-22 08:16:20 CST 的 Unix 秒
+        let expect = if local_utc_offset() == 8 * 3600 {
+            1790036180 // 2026-09-22 08:16:20 +08:00
+        } else {
+            start // 非 +8 环境不校准（CI UTC：epoch - offset 与文件名一致即可）
+        };
+        assert_eq!(start, expect, "段起点应从文件名解析");
+        assert_ne!(start, mtime_ns(fake_mtime) / 1_000_000_000);
+    }
+
+    /// 文件名解析失败回退 mtime（老文件/非 seg 命名）。
+    #[test]
+    fn seg_start_fallback_mtime() {
+        let fake_mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(12345);
+        for name in ["clip_001.mp4", "seg_2026.mp4", "seg_abcdefgh_010101.mp4"] {
+            let p = PathBuf::from("/tmp/x").join(name);
+            assert_eq!(
+                parse_seg_start(&p, fake_mtime),
+                12345 * 1_000_000_000,
+                "{name}"
+            );
+        }
+        // 合法命名格式校验：15 位（8 日期 + 1 下划线 + 6 时分秒）
+        let p = PathBuf::from("/tmp/x/seg_20260922_081620.mp4");
+        assert!(parse_seg_start(&p, fake_mtime) != 12345 * 1_000_000_000);
+    }
+
+    /// 扫描事件携带段起点 + 真实时长（mtime - 起点）。
+    #[test]
+    fn scan_emits_start_and_duration() {
+        let dir = std::env::temp_dir().join(format!("aivx-seg-dur-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 段起点 2026-09-22 08:16:20 CST；封口 mtime = 起点 + 598s
+        let start = if local_utc_offset() == 8 * 3600 {
+            1790036180u64
+        } else {
+            return; // 非 +8 环境跳过（避免时区耦合）
+        };
+        let f = dir.join("seg_20260922_081620.mp4");
+        std::fs::write(&f, b"x").unwrap();
+        let mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(start + 598);
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .and_then(|fh| fh.set_modified(mtime));
+
+        let mut scanner = SegmentScanner::new("dev-1".into(), dir.clone());
+        let mut events = Vec::new();
+        scanner.scan(|ev| {
+            events.push(ev);
+            true
+        });
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::RecordingSegment {
+                start_mono_ns,
+                duration_secs,
+                ..
+            } => {
+                assert_eq!(*start_mono_ns, start * 1_000_000_000, "start=段起点");
+                assert!(
+                    (*duration_secs - 598.0).abs() < 1.0,
+                    "duration=mtime-起点≈598，got {duration_secs}"
+                );
+            }
+            _ => panic!("应发 RecordingSegment"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

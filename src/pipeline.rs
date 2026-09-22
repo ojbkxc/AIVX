@@ -236,20 +236,24 @@ impl Projector {
                 device_id,
                 file_path,
                 start_mono_ns,
+                duration_secs,
                 ..
             } => {
-                // start_mono_ns 字段实为 mtime 墙钟纳秒（record.rs 历史误名）。
-                self.projections
-                    .recordings
-                    .lock()
-                    .unwrap()
-                    .push(RecordingRow {
-                        id: format!("{device_id}-{start_mono_ns}"),
-                        device_id: device_id.clone(),
-                        file_path: file_path.clone(),
-                        start_ts: (*start_mono_ns / 1_000_000_000) as i64,
-                        duration_secs: 0.0, // API 层按段序差分补
-                    });
+                // start_mono_ns：scanner 传的是段起点墙钟纳秒（文件名
+                // seg_%Y%m%d_%H%M%S 解析；解析失败回退 mtime）。同文件
+                // 重复投影（scanner seen 只挡 emit 失败，flush 后重扫
+                // 不会）按 id 去重——mtime 段会重复 push 同一 id。
+                let row = RecordingRow {
+                    id: format!("{device_id}-{start_mono_ns}"),
+                    device_id: device_id.clone(),
+                    file_path: file_path.clone(),
+                    start_ts: (*start_mono_ns / 1_000_000_000) as i64,
+                    duration_secs: *duration_secs,
+                };
+                let mut rows = self.projections.recordings.lock().unwrap();
+                if !rows.iter().any(|r| r.id == row.id) {
+                    rows.push(row);
+                }
             }
             _ => {}
         }
