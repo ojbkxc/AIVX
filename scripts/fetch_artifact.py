@@ -14,8 +14,15 @@ def api(url):
     req = urllib.request.Request(url, headers=HEADERS)
     return json.load(urllib.request.urlopen(req, timeout=30))
 
-# 最新 Deploy run 的 linux zip artifact
-arts = api("https://api.github.com/repos/ojbkxc/AIVX/actions/runs/35589700499/artifacts")
+# 最新 Deploy run 的 linux zip artifact（动态查最新 Deploy run——曾硬编码
+# 旧 run id 导致部署旧二进制，线上 404 诡异排查浪费一轮）
+runs = api("https://api.github.com/repos/ojbkxc/AIVX/actions/runs?per_page=20")
+deploy = next(
+    r for r in runs["workflow_runs"]
+    if r["name"] == "Deploy" and r["conclusion"] == "success"
+)
+print("deploy run:", deploy["id"], deploy["head_sha"][:7])
+arts = api(f"https://api.github.com/repos/ojbkxc/AIVX/actions/runs/{deploy['id']}/artifacts")
 items = [a for a in arts.get("artifacts", []) if "linux" in a["name"] or "aivx" in a["name"].lower()]
 if not items:
     print("artifacts:", [a["name"] for a in arts.get("artifacts", [])]); sys.exit(1)
